@@ -39,12 +39,19 @@ enum ShortcutAction: CaseIterable {
     }
 }
 
-/// What the Settings window changes: the login item, restoring the boost at launch, and the
-/// global shortcuts that toggle and adjust it.
+/// What the Settings window changes: the login item, restoring the boost at launch, pausing it
+/// on a dimmed screen, and the global shortcuts that toggle and adjust it.
 @MainActor
 final class AppSettings: ObservableObject {
     @Published var restoresBoost: Bool {
         didSet { UserDefaults.standard.set(restoresBoost, forKey: Self.restoresBoostKey) }
+    }
+
+    @Published var pausesWhenDimmed: Bool {
+        didSet {
+            UserDefaults.standard.set(pausesWhenDimmed, forKey: Self.pausesWhenDimmedKey)
+            controller.pausesWhenDimmed = pausesWhenDimmed
+        }
     }
 
     @Published var showsMenuBarIcon: Bool {
@@ -64,6 +71,7 @@ final class AppSettings: ObservableObject {
     @Published private(set) var recordingAction: ShortcutAction?
 
     private static let restoresBoostKey = "restoresBoost"
+    private static let pausesWhenDimmedKey = "pausesWhenDimmed"
     private static let showsMenuBarIconKey = "showsMenuBarIcon"
 
     private let logger = Logger(subsystem: "dev.kennyb.Brighter", category: "settings")
@@ -79,6 +87,10 @@ final class AppSettings: ObservableObject {
         self.controller = controller
         let defaults = UserDefaults.standard
         restoresBoost = defaults.bool(forKey: Self.restoresBoostKey)
+        // On until it's switched off, the way the boost behaved before this was a setting.
+        let pauses = defaults.object(forKey: Self.pausesWhenDimmedKey) as? Bool ?? true
+        pausesWhenDimmed = pauses
+        controller.pausesWhenDimmed = pauses
         // Shown until it's switched off, so a first launch always has the icon.
         showsMenuBarIcon = defaults.object(forKey: Self.showsMenuBarIconKey) as? Bool ?? true
         launchesAtLogin = Self.isOn(SMAppService.mainApp.status)

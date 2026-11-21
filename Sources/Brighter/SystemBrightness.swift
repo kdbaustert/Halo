@@ -38,9 +38,9 @@ enum SystemBrightness {
     }
 }
 
-/// Keeps the boost to a screen at full brightness. Dimming from 100% turns it off, and getting
+/// Keeps the boost to a bright screen. Dimming below `dimmedLevel` turns it off, and getting
 /// back to 100% turns it on again, but only if this rule was what turned it off. Switching the
-/// boost on by hand while dimmed is left alone until the next drop from 100%.
+/// boost on by hand while dimmed is left alone until the next drop below `dimmedLevel`.
 enum FullBrightnessRule {
     enum Change: Equatable {
         case suspend
@@ -49,15 +49,22 @@ enum FullBrightnessRule {
 
     /// The top of the brightness slider can read a hair under 1 after float rounding.
     static let fullLevel: Float = 0.995
+    /// Auto-brightness nudges the slider a few percent under 100% as the room light changes, and
+    /// treating that as dimming switched the boost off for seconds at a time.
+    static let dimmedLevel: Float = 0.8
 
     static func isFull(_ level: Float) -> Bool {
         level >= fullLevel
     }
 
+    static func isDimmed(_ level: Float) -> Bool {
+        level < dimmedLevel
+    }
+
     static func change(
         from previous: Float, to level: Float, isEnabled: Bool, isWaiting: Bool
     ) -> Change? {
-        if isEnabled && isFull(previous) && !isFull(level) { return .suspend }
+        if isEnabled && !isDimmed(previous) && isDimmed(level) { return .suspend }
         if isWaiting && isFull(level) { return .resume }
         return nil
     }

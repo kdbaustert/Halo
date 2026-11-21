@@ -82,9 +82,21 @@ final class KeyComboTests: XCTestCase {
 }
 
 final class FullBrightnessRuleTests: XCTestCase {
-    func testDroppingFromFullSuspendsTheBoost() {
-        let change = FullBrightnessRule.change(from: 1, to: 0.9, isEnabled: true, isWaiting: false)
-        XCTAssertEqual(change, .suspend)
+    func testDroppingBelowTheDimmedLevelSuspendsTheBoost() {
+        XCTAssertEqual(
+            FullBrightnessRule.change(from: 1, to: 0.5, isEnabled: true, isWaiting: false),
+            .suspend)
+        XCTAssertEqual(
+            FullBrightnessRule.change(from: 0.8, to: 0.79, isEnabled: true, isWaiting: false),
+            .suspend)
+    }
+
+    // Auto-brightness moves the slider like this as the room light changes.
+    func testSmallDipFromFullLeavesTheBoostOn() {
+        XCTAssertNil(
+            FullBrightnessRule.change(from: 1, to: 0.9, isEnabled: true, isWaiting: false))
+        XCTAssertNil(
+            FullBrightnessRule.change(from: 0.9, to: 0.8, isEnabled: true, isWaiting: false))
     }
 
     func testDimmingFurtherLeavesAManualBoostOn() {

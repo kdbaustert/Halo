@@ -118,9 +118,21 @@ private struct GeneralSettings: View {
                     subtitle: "If it was on when Halo quit.",
                     isOn: $settings.restoresBoost)
             }
+            SettingsSection(title: "Brightness") {
+                SettingsToggle(
+                    title: "Pause the boost when the screen is dimmed",
+                    subtitle: Self.pauseSubtitle,
+                    isOn: $settings.pausesWhenDimmed)
+            }
         }
         // The item can be switched off in System Settings while this window is closed.
         .onAppear(perform: settings.refreshLoginItem)
+    }
+
+    /// Read from `FullBrightnessRule` so the text can't drift from what the rule does.
+    private static var pauseSubtitle: String {
+        let dimmed = Int((FullBrightnessRule.dimmedLevel * 100).rounded())
+        return "Below \(dimmed)%, until it's back at 100%. Turn off if auto-brightness trips it."
     }
 }
 

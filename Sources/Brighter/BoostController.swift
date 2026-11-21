@@ -30,6 +30,15 @@ final class BoostController: ObservableObject {
         }
     }
 
+    /// Whether `FullBrightnessRule` runs at all. Set from Settings. Switching it off while waiting
+    /// turns the boost straight back on.
+    var pausesWhenDimmed = true {
+        didSet {
+            guard !pausesWhenDimmed, isWaitingForFullBrightness else { return }
+            isEnabled = true
+        }
+    }
+
     /// Saved on every change, so Settings can turn the boost back on at the next launch. A boost
     /// waiting for full brightness counts as on.
     var wasEnabledAtQuit: Bool { UserDefaults.standard.bool(forKey: Self.wasEnabledKey) }
@@ -63,7 +72,7 @@ final class BoostController: ObservableObject {
     private var boostedLayout: [DisplayLayout] = []
     private var reapplyTimer: Timer?
     private var brightnessTimer: Timer?
-    /// The level at the last check, so only a drop from 100% turns the boost off.
+    /// The level at the last check, so only a drop past the dimmed level turns the boost off.
     private var lastBrightness: Float?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
 
@@ -76,7 +85,9 @@ final class BoostController: ObservableObject {
 
     /// Turns the boost back on at launch, or waits for full brightness if the screen is dimmed.
     func restore() {
-        if let level = SystemBrightness.builtInLevel(), !FullBrightnessRule.isFull(level) {
+        if pausesWhenDimmed, let level = SystemBrightness.builtInLevel(),
+            FullBrightnessRule.isDimmed(level)
+        {
             isWaitingForFullBrightness = true
         } else {
             isEnabled = true
@@ -148,12 +159,16 @@ final class BoostController: ObservableObject {
     private func followBrightness() {
         guard let level = SystemBrightness.builtInLevel() else { return }
         let previous = lastBrightness ?? level
+        // Kept current even with the rule off, so switching it on doesn't compare against a
+        // level from before.
         lastBrightness = level
+        guard pausesWhenDimmed else { return }
         let change = FullBrightnessRule.change(
             from: previous, to: level, isEnabled: isEnabled, isWaiting: isWaitingForFullBrightness)
         switch change {
         case .suspend:
-            logger.info("Brightness dropped below full; boost off until it's back")
+            logger.info(
+                "Brightness down to \(level, format: .fixed(precision: 3)); boost off until full")
             isEnabled = false
             isWaitingForFullBrightness = true
         case .resume:
