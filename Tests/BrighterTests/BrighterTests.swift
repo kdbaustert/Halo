@@ -79,6 +79,23 @@ final class KeyComboTests: XCTestCase {
         let combo = KeyCombo(keyCode: keyB, modifiers: [.control, .option], characters: "b")
         XCTAssertEqual(combo?.carbonModifiers, UInt32(controlKey | optionKey))
     }
+
+    func testKeyWithNothingToShowIsRefused() {
+        XCTAssertNil(KeyCombo(keyCode: keyB, modifiers: .command, characters: nil))
+        XCTAssertNil(KeyCombo(keyCode: keyB, modifiers: .command, characters: " "))
+    }
+
+    // Shortcuts are saved to UserDefaults as JSON and read back at launch.
+    func testSavedComboDecodesToTheSameShortcut() throws {
+        let combo = try XCTUnwrap(
+            KeyCombo(keyCode: keyB, modifiers: [.command, .shift], characters: "b"))
+
+        let decoded = try JSONDecoder().decode(
+            KeyCombo.self, from: JSONEncoder().encode(combo))
+
+        XCTAssertEqual(decoded, combo)
+        XCTAssertEqual(decoded.displayString, "⇧⌘B")
+    }
 }
 
 final class FullBrightnessRuleTests: XCTestCase {
@@ -117,8 +134,22 @@ final class FullBrightnessRuleTests: XCTestCase {
             FullBrightnessRule.change(from: 0.5, to: 0.8, isEnabled: false, isWaiting: true))
     }
 
+    func testDimmedStartsJustBelowTheDimmedLevel() {
+        XCTAssertFalse(FullBrightnessRule.isDimmed(0.8))
+        XCTAssertTrue(FullBrightnessRule.isDimmed(0.799))
+    }
+
     func testTopOfTheSliderJustUnderOneCountsAsFull() {
         XCTAssertTrue(FullBrightnessRule.isFull(0.999))
         XCTAssertFalse(FullBrightnessRule.isFull(0.98))
+    }
+}
+
+final class BoostErrorTests: XCTestCase {
+    // The message is all Settings shows, so it has to say which display and which call failed.
+    func testMessageNamesTheDisplayAndTheError() {
+        let error = BoostError.gammaWrite(display: 2, error: .illegalArgument)
+        XCTAssertEqual(
+            error.message, "Couldn't set the gamma table of display 2 (CGError 1001).")
     }
 }
