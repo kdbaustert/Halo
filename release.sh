@@ -1,103 +1,223 @@
 #!/bin/bash
-# Builds, signs and packages Halo for a GitHub release, then adds it to the Sparkle appcast.
+# Builds a Halo release: the app, its zip, and the update feed with this release added.
 #
-#   ./release.sh                          Developer ID sign and verify
-#   ./release.sh --notarize               ... then notarize and staple (needs NOTARY_PROFILE)
-#   ./release.sh --adhoc                  ad-hoc sign, for releasing without a Developer ID
-#   VERSION=1.2.0 BUILD=34 ./release.sh   stamp a version into the bundle and Resources/Info.plist
+# Releases are published by GitHub Actions when a version tag is pushed, see
+# .github/workflows/release.yml. This script is the build half that workflow runs, and it can be
+# run by hand to check a release before tagging it:
 #
-# An ad-hoc download is flagged by Gatekeeper, so its first launch needs right-click > Open or
-# `xattr -cr`. Sparkle's EdDSA signature works the same in every mode.
+#   VERSION=1.2.0 BUILD=40 ./release.sh               a stable release
+#   VERSION=1.3.0-beta BUILD=41 ./release.sh --beta   a beta, offered only to copies that opt in
+#   ... ./release.sh --notarize                       Developer ID signed and notarized
 #
-# CODESIGN_IDENTITY picks the certificate when the keychain has several Developer IDs.
-# NOTARY_PROFILE names a credential stored with `xcrun notarytool store-credentials`.
-# APPCAST_URL, if set, is the published feed to extend when build/releases has none.
+# VERSION is what people see. BUILD is what Sparkle compares to decide whether an update is newer,
+# so it must be a whole number that grows with every release, betas and stable alike (the workflow
+# uses the commit count). A BUILD the feed already carries (the same commit released again, as
+# when a beta is promoted to stable) is raised to the next free one: two releases with the same
+# build would share, and garble, one feed entry. That raise happens only when the entry is the
+# feed's newest; promoting an older commit while newer builds are live is refused, since the raised
+# build would sit above them and offer their users older code. A BUILD not above its own channel's
+# newest is refused instead, since no copy would be offered it.
+#
+# Without --notarize there is no Developer ID behind the app, so Gatekeeper blocks the first
+# launch. Since macOS 15 right-click > Open no longer gets past it: it takes System Settings >
+# Privacy & Security > Open Anyway after the blocked-launch dialog, or `xattr -cr` on the app.
+# Updates after that arrive through Sparkle, which checks each one against the EdDSA key instead.
+#
+# Environment:
+#   CODESIGN_IDENTITY  signing identity; ad-hoc when unset. --notarize needs a Developer ID here
+#   NOTARY_PROFILE     a credential stored with `xcrun notarytool store-credentials`, for --notarize
+#   SPARKLE_KEY_FILE   sign the feed with a private key file instead of the login keychain (the
+#                      workflow's case: read from a runner's keychain, signing stops for a
+#                      permission prompt nobody is there to answer)
+#   EXISTING_ZIP       a zip already built (and perhaps already published), relative to the
+#                      repository root: add it to the feed instead of building. Its own
+#                      CFBundleVersion replaces BUILD, since its signature covers those bytes.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 APP="build/Halo.app"
-ZIP="build/Halo.zip"
+RELEASES="build/releases"
+STAGING="build/appcast-staging"
+BETA=0
 NOTARIZE=0
-ADHOC=0
-case "${1:-}" in
-    --notarize) NOTARIZE=1 ;;
-    --adhoc) ADHOC=1 ;;
-    "") ;;
-    *)
-        echo "==> ERROR: unknown option \"$1\" (expected --notarize, --adhoc or nothing)" >&2
-        exit 1
-        ;;
-esac
-
-if [[ "$ADHOC" == "1" ]]; then
-    IDENTITY="-"
-else
-    # By common name, so a renewed certificate still matches.
-    IDENTITY="${CODESIGN_IDENTITY:-}"
-    if [[ -z "$IDENTITY" ]]; then
-        FOUND=$(security find-identity -v -p codesigning \
-            | grep "Developer ID Application" \
-            | sed -E 's/.*"(.*)".*/\1/' || true)
-        if [[ "$(printf '%s' "$FOUND" | grep -c . || true)" -gt 1 ]]; then
-            echo "==> ERROR: several Developer ID certificates found, pick one with CODESIGN_IDENTITY:" >&2
-            printf '%s\n' "$FOUND" | sed 's/^/      /' >&2
+for argument in "$@"; do
+    case "$argument" in
+        --beta) BETA=1 ;;
+        --notarize) NOTARIZE=1 ;;
+        *)
+            echo "==> ERROR: unknown argument '$argument' (expected --beta, --notarize or nothing)" >&2
             exit 1
-        fi
-        IDENTITY="$FOUND"
-    fi
-    if [[ -z "$IDENTITY" ]]; then
-        echo "==> ERROR: no \"Developer ID Application\" certificate in the keychain." >&2
-        echo "    Release without one: ./release.sh --adhoc" >&2
+            ;;
+    esac
+done
+
+: "${VERSION:?Set VERSION, e.g. VERSION=1.2.0 BUILD=40 ./release.sh}"
+: "${BUILD:?Set BUILD, a whole number that grows with every release. Sparkle compares it}"
+if [[ ! "$BUILD" =~ ^[0-9]+$ ]]; then
+    echo "==> ERROR: BUILD must be a whole number, not '$BUILD'" >&2
+    exit 1
+fi
+if [[ "$NOTARIZE" == "1" && -z "${EXISTING_ZIP:-}" ]]; then
+    if [[ "${CODESIGN_IDENTITY:-}" != *"Developer ID Application"* ]]; then
+        echo "==> ERROR: --notarize needs CODESIGN_IDENTITY set to a Developer ID Application identity" >&2
         exit 1
     fi
-fi
-echo "==> Release identity: $IDENTITY"
-
-# Notarizing needs the hardened runtime and a timestamp. Ad-hoc gains nothing from either, and has
-# no signing service to timestamp with.
-HARDENED=1
-[[ "$ADHOC" == "1" ]] && HARDENED=0
-
-# Written into the tracked plist too, so the tree records what was last shipped. perl rather than
-# PlistBuddy, which rewrites the whole file and drops its comments.
-stamp_template() {
-    local key="$1" value="$2"
-    KEY="$key" VALUE="$value" perl -0pi -e \
-        's{(<key>\Q$ENV{KEY}\E</key>\s*<string>)[^<]*(</string>)}{$1$ENV{VALUE}$2}' \
-        Resources/Info.plist
-    if [[ "$(/usr/libexec/PlistBuddy -c "Print :$key" Resources/Info.plist)" != "$value" ]]; then
-        echo "==> ERROR: could not stamp $key=$value into Resources/Info.plist" >&2
-        exit 1
-    fi
-}
-[[ -n "${VERSION:-}" ]] && stamp_template CFBundleShortVersionString "$VERSION"
-[[ -n "${BUILD:-}" ]] && stamp_template CFBundleVersion "$BUILD"
-
-CODESIGN_IDENTITY="$IDENTITY" HARDENED="$HARDENED" RELEASE=1 UNIVERSAL=1 ./build.sh
-
-echo "==> Verifying signature"
-codesign --verify --deep --strict --verbose=2 "$APP"
-codesign --display --verbose=4 "$APP" 2>&1 \
-    | grep -E "Authority|TeamIdentifier|Timestamp|Runtime Version|Identifier" || true
-
-if [[ "$ADHOC" != "1" && "$NOTARIZE" != "1" ]]; then
-    echo "==> Built and signed: $APP"
-    echo "    Not notarized, so Gatekeeper refuses it on other Macs. Re-run with --notarize."
-    exit 0
-fi
-
-# ditto, not zip: it keeps the framework's symlinks, which the notary service and the signature
-# both need.
-rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"
-
-if [[ "$NOTARIZE" == "1" ]]; then
     if [[ -z "${NOTARY_PROFILE:-}" ]]; then
-        echo "==> ERROR: NOTARY_PROFILE is not set. Store credentials once with:" >&2
+        echo "==> ERROR: --notarize needs NOTARY_PROFILE. Store credentials once with:" >&2
         echo "      xcrun notarytool store-credentials \"Halo\" \\" >&2
         echo "        --apple-id you@example.com --team-id TEAMID --password <app-specific-password>" >&2
         exit 1
     fi
+fi
+
+ARCHIVE="Halo-$VERSION.zip"
+ZIP="$RELEASES/$ARCHIVE"
+if [[ -n "${EXISTING_ZIP:-}" ]]; then
+    if [[ ! -f "$EXISTING_ZIP" ]]; then
+        echo "==> ERROR: EXISTING_ZIP '$EXISTING_ZIP' does not exist" >&2
+        exit 1
+    fi
+    ZIP="$EXISTING_ZIP"
+    ZIP_PLIST="$(mktemp)"
+    unzip -p "$ZIP" Halo.app/Contents/Info.plist > "$ZIP_PLIST"
+    ZIP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ZIP_PLIST")"
+    BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$ZIP_PLIST")"
+    rm -f "$ZIP_PLIST"
+    if [[ "$ZIP_VERSION" != "$VERSION" ]]; then
+        echo "==> ERROR: $ZIP is version $ZIP_VERSION, not $VERSION" >&2
+        exit 1
+    fi
+    echo "==> Using the existing $ZIP (build $BUILD) instead of building"
+fi
+
+# ---------------------------------------------------------------- feed so far
+
+# The feed this release extends, read from the gh-pages branch rather than the Pages URL that
+# serves it: the URL 404s while Pages is off and caches for ten minutes when it is on, so a second
+# release soon after the first would extend a feed missing the first's entry and publish over it.
+# `--exit-code` tells "no such branch" (2: the first release) from a failed query, which must stop
+# the release rather than read as a first one. Read before building, because BUILD depends on it.
+rm -rf "$STAGING"
+mkdir -p "$STAGING"
+status=0
+git ls-remote --exit-code --heads origin gh-pages >/dev/null || status=$?
+if [[ "$status" == 2 ]]; then
+    echo "==> No gh-pages branch yet: this release starts the feed"
+elif [[ "$status" != 0 ]]; then
+    echo "==> ERROR: could not ask origin about gh-pages (git ls-remote exit $status)" >&2
+    exit 1
+else
+    git fetch --quiet origin gh-pages
+    if git cat-file -e origin/gh-pages:appcast.xml 2>/dev/null; then
+        git show origin/gh-pages:appcast.xml > "$STAGING/appcast.xml"
+        echo "==> Extending the published appcast"
+    else
+        echo "==> gh-pages has no appcast.xml yet: this release starts the feed"
+    fi
+fi
+
+# Feed items are matched with local-name() because xmllint cannot bind the sparkle: prefix.
+SPARKLE_NS="http://www.andymatuschak.org/xml-namespaces/sparkle"
+sparkle() {
+    printf '*[local-name()="%s" and namespace-uri()="%s"]' "$1" "$SPARKLE_NS"
+}
+# The one feed entry for $BUILD, as an XPath; its fields are read with `feed_value`.
+ITEM="/rss/channel/item[$(sparkle version) = \"$BUILD\"]"
+feed_value() {
+    xmllint --xpath "$1" "$STAGING/appcast.xml"
+}
+
+ENTRY_EXISTS=0
+if [[ -f "$STAGING/appcast.xml" ]]; then
+    # The highest build in the feed: the one no other build is greater than.
+    LATEST="$(feed_value "string(/rss/channel/item/$(sparkle version)[not(. < /rss/channel/item/$(sparkle version))])")"
+    LATEST="${LATEST:-0}"
+    if [[ ! "$LATEST" =~ ^[0-9]+$ ]]; then
+        echo "==> ERROR: the published feed's highest build is '$LATEST', not a whole number" >&2
+        exit 1
+    fi
+    if [[ -n "${EXISTING_ZIP:-}" ]]; then
+        # A re-run after the feed was already published: check that entry rather than write another.
+        [[ "$(feed_value "count($ITEM)")" != 0 ]] && ENTRY_EXISTS=1
+    elif [[ "$(feed_value "count($ITEM)")" != 0 ]]; then
+        # The same commit released again takes the next free build rather than garbling the entry
+        # already published under this one. Only when that entry is the feed's newest, though: with
+        # a newer one live, the raised build would sit above it and offer older code as an update.
+        if (( BUILD != LATEST )); then
+            echo "==> ERROR: the feed already has an entry for build $BUILD, and newer ones (up to build $LATEST) are live" >&2
+            echo "    Raising this release past them would offer older code to copies already on the newer builds" >&2
+            echo "    Tag a commit newer than the one that made build $LATEST, or set BUILD above $LATEST yourself" >&2
+            exit 1
+        fi
+        echo "==> NOTE: the feed already has an entry for build $BUILD; releasing as build $((LATEST + 1))"
+        BUILD=$((LATEST + 1))
+        ITEM="/rss/channel/item[$(sparkle version) = \"$BUILD\"]"
+    else
+        # What this release's own audience already has: beta copies see every entry, stable copies
+        # only the channel-less ones. Raising a stable hotfix past every channel instead would hand
+        # beta users a downgrade dressed as an update, so it stops here.
+        if [[ "$BETA" == "1" ]]; then
+            AUDIENCE_LATEST="$LATEST"
+        else
+            STABLE_VERSIONS="/rss/channel/item[not($(sparkle channel))]/$(sparkle version)"
+            AUDIENCE_LATEST="$(feed_value "string(${STABLE_VERSIONS}[not(. < $STABLE_VERSIONS)])")"
+            AUDIENCE_LATEST="${AUDIENCE_LATEST:-0}"
+        fi
+        if (( BUILD <= AUDIENCE_LATEST )); then
+            echo "==> ERROR: build $BUILD is not above its own channel's newest ($AUDIENCE_LATEST), so no copy would be offered it" >&2
+            echo "    Tag a commit past the one that made build $AUDIENCE_LATEST, or set BUILD above it yourself" >&2
+            exit 1
+        fi
+    fi
+fi
+
+# Build and package only when there is no existing zip (left unindented; it closes after package).
+if [[ -z "${EXISTING_ZIP:-}" ]]; then
+
+# ---------------------------------------------------------------- build
+
+# The version goes into the tracked Info.plist too, so the tree records what was last shipped.
+# A text substitution rather than PlistBuddy, which would re-sort the file and drop its comments.
+# Put back on exit unless this is the workflow succeeding (it commits the stamp afterwards), so a
+# hand run or a failed build leaves the tracked file as it found it.
+PLIST_BACKUP="$(mktemp)"
+cp Resources/Info.plist "$PLIST_BACKUP"
+restore_plist() {
+    local exit_status=$?
+    if [[ "$exit_status" != 0 || -z "${GITHUB_ACTIONS:-}" ]]; then
+        cp "$PLIST_BACKUP" Resources/Info.plist
+    fi
+    rm -f "$PLIST_BACKUP"
+}
+trap restore_plist EXIT
+stamp() {
+    KEY="$1" VALUE="$2" perl -0pi -e \
+        's{(<key>\Q$ENV{KEY}\E</key>\s*<string>)[^<]*(</string>)}{$1$ENV{VALUE}$2}' Resources/Info.plist
+    if [[ "$(/usr/libexec/PlistBuddy -c "Print :$1" Resources/Info.plist)" != "$2" ]]; then
+        echo "==> ERROR: could not stamp $1=$2 into Resources/Info.plist" >&2
+        exit 1
+    fi
+}
+stamp CFBundleShortVersionString "$VERSION"
+stamp CFBundleVersion "$BUILD"
+
+# Universal, so Intel Macs get it too. Notarizing needs the hardened runtime and a timestamp.
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}" HARDENED="$NOTARIZE" RELEASE=1 UNIVERSAL=1 \
+    VERSION="$VERSION" BUILD="$BUILD" ./build.sh
+if [[ -z "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP/Contents/Info.plist" 2>/dev/null)" ]]; then
+    echo "==> ERROR: the built app has no SUFeedURL, so it would never find an update" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------- package
+
+mkdir -p "$RELEASES"
+echo "==> Packaging $ARCHIVE"
+# ditto, not zip: it keeps the framework's version symlinks, without which the signature fails.
+rm -f "$ZIP"
+ditto -c -k --keepParent "$APP" "$ZIP"
+
+if [[ "$NOTARIZE" == "1" ]]; then
     echo "==> Submitting to Apple (this takes a few minutes)"
     xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
     # Stapled so the app opens on a Mac that can't reach Apple, then zipped again to carry the
@@ -109,47 +229,84 @@ if [[ "$NOTARIZE" == "1" ]]; then
     ditto -c -k --keepParent "$APP" "$ZIP"
 fi
 
-RELEASES="build/releases"
-APPCAST="$RELEASES/appcast.xml"
-STAGING="build/appcast-staging"
-GENERATE_APPCAST="$(find .build/artifacts -type f -name generate_appcast -perm -u+x -print -quit || true)"
-if [[ -z "$GENERATE_APPCAST" ]]; then
-    echo "==> ERROR: generate_appcast not found, run 'swift package resolve'" >&2
-    exit 1
 fi
 
-# Versioned names, because generate_appcast tells archives apart by filename.
-STAMPED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-ARCHIVE="Halo-$STAMPED_VERSION.zip"
-mkdir -p "$RELEASES"
-cp "$ZIP" "$RELEASES/$ARCHIVE"
+# ---------------------------------------------------------------- appcast
 
-# A failed fetch stops the release. Carrying on would publish a feed listing only this version,
-# and installs more than one version behind would never see an update again.
-if [[ -n "${APPCAST_URL:-}" && ! -f "$APPCAST" ]]; then
-    echo "==> Fetching the published appcast"
-    if ! curl -fsSL "$APPCAST_URL" -o "$APPCAST"; then
-        rm -f "$APPCAST"
-        echo "==> ERROR: could not fetch $APPCAST_URL. Unset APPCAST_URL for the first release." >&2
+mkdir -p "$RELEASES"
+if [[ "$ENTRY_EXISTS" == "1" ]]; then
+    echo "==> The feed already has build $BUILD: checking it rather than writing it again"
+else
+    GENERATE_APPCAST="$(find .build/artifacts -type f -name generate_appcast -perm -u+x -print -quit)"
+    if [[ -z "$GENERATE_APPCAST" ]]; then
+        echo "==> ERROR: generate_appcast not found, run 'swift package resolve'" >&2
+        exit 1
+    fi
+
+    # generate_appcast sees this release's zip and the feed so far, nothing else. Shown older zips,
+    # it would rewrite their entries to point at this release's download folder, where they don't
+    # exist.
+    cp "$ZIP" "$STAGING/"
+    # Halo's own key, not the keychain's default account, which is another app's.
+    APPCAST_ARGS=(--account Halo)
+    if [[ -n "${SPARKLE_KEY_FILE:-}" ]]; then
+        APPCAST_ARGS=(--ed-key-file "$SPARKLE_KEY_FILE")
+    fi
+    # A beta's entry carries the "beta" channel; clients only see it once they have opted in.
+    if [[ "$BETA" == "1" ]]; then
+        APPCAST_ARGS+=(--channel beta)
+    fi
+    echo "==> Signing the update and writing the appcast"
+    # ${a[@]+...}: macOS ships bash 3.2, where an empty array under `set -u` is an error.
+    # It exits 0 after a key mismatch (writing an unsigned entry) and after an unreadable key
+    # (writing nothing), so its output is checked too. "updated N existing" means it edited an entry
+    # already published, which the build number check above exists to prevent.
+    status=0
+    output="$("$GENERATE_APPCAST" ${APPCAST_ARGS[@]+"${APPCAST_ARGS[@]}"} \
+        --download-url-prefix "https://github.com/kdbaustert/Halo/releases/download/v$VERSION/" \
+        --full-release-notes-url "https://github.com/kdbaustert/Halo/releases/tag/v$VERSION" \
+        --maximum-deltas 0 \
+        "$STAGING" 2>&1)" || status=$?
+    printf '%s\n' "$output"
+    if [[ "$status" != 0 ]]; then
+        echo "==> ERROR: generate_appcast failed (exit $status)" >&2
+        exit 1
+    fi
+    if grep -E -- 'Warning:|Error:|updated [1-9][0-9]* existing' <<<"$output" >/dev/null; then
+        echo "==> ERROR: generate_appcast reported a problem (above), so the feed can't be trusted" >&2
         exit 1
     fi
 fi
+cp "$STAGING/appcast.xml" "$RELEASES/appcast.xml"
 
-# generate_appcast only sees this release's zip and the feed so far. Given older zips too, it
-# re-points their items at this release's download URL, where those files don't exist.
-rm -rf "$STAGING"
-mkdir -p "$STAGING"
-cp "$RELEASES/$ARCHIVE" "$STAGING/"
-[[ -f "$APPCAST" ]] && cp "$APPCAST" "$STAGING/appcast.xml"
+# The checks read this release's own entry, not the whole feed, where an older entry would pass.
+if [[ ! -f "$STAGING/appcast.xml" || "$(feed_value "count($ITEM)")" != 1 ]]; then
+    echo "==> ERROR: the appcast has no single entry for build $BUILD" >&2
+    exit 1
+fi
+TITLE="$(feed_value "string($ITEM/title)")"
+if [[ "$TITLE" != "$VERSION" ]]; then
+    echo "==> ERROR: build $BUILD's appcast entry is titled '$TITLE', not '$VERSION'" >&2
+    exit 1
+fi
+if [[ -z "$(feed_value "string($ITEM/enclosure/@$(sparkle edSignature))")" ]]; then
+    echo "==> ERROR: build $BUILD's appcast entry has no EdDSA signature, so every client would refuse the update" >&2
+    exit 1
+fi
+CHANNEL="$(feed_value "string($ITEM/$(sparkle channel))")"
+if [[ "$VERSION" == *-* && "$CHANNEL" != "beta" ]]; then
+    echo "==> ERROR: the beta's appcast entry has no beta channel, so it would go to everyone" >&2
+    exit 1
+fi
+if [[ "$VERSION" != *-* && -n "$CHANNEL" ]]; then
+    echo "==> ERROR: the stable release's appcast entry is on channel '$CHANNEL', so most copies would never see it" >&2
+    exit 1
+fi
 
-echo "==> Generating appcast"
-DOWNLOAD_PREFIX="${DOWNLOAD_URL_PREFIX:-https://github.com/kdbaustert/Halo/releases/download/v$STAMPED_VERSION/}"
-"$GENERATE_APPCAST" \
-    --download-url-prefix "$DOWNLOAD_PREFIX" \
-    --maximum-versions 0 \
-    --maximum-deltas 0 \
-    "$STAGING"
-cp "$STAGING/appcast.xml" "$APPCAST"
+# The workflow records the build it shipped, which may be the raised one or the existing zip's.
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+fi
 
-echo "==> Appcast written: $APPCAST"
-echo "    Upload $RELEASES/$ARCHIVE to the v$STAMPED_VERSION release and $APPCAST to gh-pages."
+echo "==> Ready ($([[ "$BETA" == "1" ]] && echo beta || echo stable)): $ZIP and $RELEASES/appcast.xml"
+echo "    To publish, push the tag: git tag v$VERSION && git push origin v$VERSION"

@@ -1,21 +1,27 @@
 name: Release
 
-# Pushing a tag like v0.2.0 builds, signs, publishes the zip and adds it to the appcast that every
-# install checks daily. It notarizes once a Developer ID certificate secret exists, and releases
-# ad-hoc until then.
+# Tag-driven. Pushing `v1.2.0` builds, signs and publishes that version and adds it to the update
+# feed every installed copy checks within a day. A tag with a hyphen, like `v1.3.0-beta`, is a
+# beta: the same kind of release, but its feed entry is on Sparkle's beta channel, so only copies
+# with "Receive beta updates" on are offered it.
 on:
   push:
     tags: ['v*']
-  # Re-runs a release that failed partway, for example on Apple's side.
+  # Re-runs a release for a tag that already exists, if a run failed partway.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to release (e.g. v0.2.0)'
+        description: 'Existing tag to release (e.g. v1.2.0)'
         required: true
 
-# Two releases at once would race on the appcast and one would lose its entry.
+# One run per commit at a time. Two tags on one commit share a build number, the commit count:
+# queued, the second starts once the first is in the feed, and release.sh raises it to the next
+# free build. Keyed by commit rather than one group for every release, because GitHub keeps one
+# pending run per group and cancels the rest. Releases of different commits still run side by
+# side, and the feed step below regenerates against the latest feed and retries when another
+# release pushed first.
 concurrency:
-  group: release
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -32,75 +38,169 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-          # The build number is the commit count, which a shallow clone gets wrong.
+          # The build number is the commit count, which needs the whole history; the feed step
+          # also fetches and pushes gh-pages.
           fetch-depth: 0
 
-      - name: Derive version from the tag
+      - name: Version from the tag
         id: version
+        # Through env, never an expression pasted into the script: a tag or input is arbitrary text,
+        # and pasted into shell it runs as code in a job holding a write token and the signing key.
+        env:
+          TAG_INPUT: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$TAG_INPUT"
+          if [[ ! "$TAG" =~ ^v[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$TAG' is not a version tag like v1.2.0 or v1.3.0-beta.1"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          # Sparkle offers an update only when its build number is higher, across betas and stable
+          # alike. The commit count only ever grows. release.sh raises it past the feed's highest
+          # when two tags share a commit.
+          BUILD="$(git rev-list --count HEAD)"
+          BETA=0
+          [[ "$VERSION" == *-* ]] && BETA=1
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-          # Sparkle only offers a higher CFBundleVersion, and the commit count only goes up.
-          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "beta=$BETA" >> "$GITHUB_OUTPUT"
+          echo "Releasing $VERSION (build $BUILD, $([[ $BETA == 1 ]] && echo beta || echo stable))"
 
-      - name: Determine release mode
-        id: mode
+      # A re-run after a step past `gh release create` failed: the release, and perhaps its zip,
+      # already exist. A rebuilt zip would not match the one uploaded, so the uploaded one is reused.
+      - name: Look for an existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
         run: |
-          if [[ -n "${{ secrets.DEVELOPER_ID_P12_BASE64 }}" ]]; then
-            echo "mode=notarize" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          ASSET_NAME="Halo-$VERSION.zip"
+          # Listed first, so a failed query stops the job rather than reading as "no release".
+          TAGS="$(gh release list --limit 1000 --json tagName --jq '.[].tagName')"
+          if ! grep -Fx -- "$TAG" <<<"$TAGS" >/dev/null; then
+            # Another tag on this commit that released but never reached the feed would have its
+            # build number taken by this release, and its re-run could never fix it. It goes first.
+            for SIBLING in $(git tag --points-at HEAD --list 'v*'); do
+              [[ "$SIBLING" != "$TAG" && "$SIBLING" =~ ^v[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.]+)?$ ]] || continue
+              grep -Fx -- "$SIBLING" <<<"$TAGS" >/dev/null || continue
+              FEED=""
+              if git fetch --quiet origin gh-pages; then
+                FEED="$(git show FETCH_HEAD:appcast.xml 2>/dev/null || true)"
+              fi
+              IN_FEED=0
+              if [[ -n "$FEED" ]]; then
+                IN_FEED="$(xmllint --xpath "count(/rss/channel/item[title = \"${SIBLING#v}\"])" - <<<"$FEED")"
+              fi
+              if [[ "$IN_FEED" == 0 ]]; then
+                echo "::error::$SIBLING is on this same commit and released, but not in the update feed. Re-run its release first (Actions > Release > Run workflow, tag $SIBLING), then this one: its zip carries build $BUILD, which this release would otherwise take first."
+                exit 1
+              fi
+            done
+            echo "exists=0" >> "$GITHUB_OUTPUT"
+            echo "reuse=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "exists=1" >> "$GITHUB_OUTPUT"
+          ASSETS="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if grep -Fx -- "$ASSET_NAME" <<<"$ASSETS" >/dev/null; then
+            mkdir -p build/releases
+            gh release download "$TAG" --pattern "$ASSET_NAME" --dir build/releases --clobber
+            echo "reuse=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG is already released: reusing its $ASSET_NAME instead of rebuilding."
           else
-            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+            echo "reuse=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG exists without $ASSET_NAME: building it and uploading to that release."
           fi
 
-      # Its own keychain, unlocked with a known password and gone with the runner.
-      - name: Import the Developer ID certificate
-        if: steps.mode.outputs.mode == 'notarize'
-        env:
-          CERT_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      - name: Toolchain
         run: |
-          set -euo pipefail
-          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          # No lock timeout, or it locks again partway through notarizing.
-          security set-keychain-settings -u "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          rm -f "$RUNNER_TEMP/cert.p12"
-          # Otherwise codesign waits on a GUI prompt nobody can answer.
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
-          # Added to the search list, not replacing it, so the system roots stay reachable.
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          security find-identity -v -p codesigning "$KEYCHAIN"
+          xcodebuild -version
+          swift --version
 
-      # Signs the appcast entries. If it doesn't match SUPublicEDKey, every install rejects every
-      # update without saying why, so this checks before building anything.
+      # The key that signs each update. Its public half is SUPublicEDKey in Info.plist; if the two
+      # ever differ, every installed copy silently refuses every update, so that is checked here,
+      # before anything is built. Signing reads the key from a file, not the keychain: read from a
+      # runner's keychain, generate_appcast stops for a permission prompt nobody is there to answer
+      # and the job hangs until it times out.
       - name: Import the Sparkle signing key
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "::error::The SPARKLE_PRIVATE_KEY secret is not set for this repository."
+            exit 1
+          fi
           swift package resolve
           GENERATE_KEYS="$(find .build/artifacts -type f -name generate_keys -perm -u+x -print -quit)"
-          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_key"
+          ( umask 077; printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_key" )
           "$GENERATE_KEYS" -f "$RUNNER_TEMP/sparkle_key"
-          rm -f "$RUNNER_TEMP/sparkle_key"
-          EXPECTED=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' Resources/Info.plist)
-          ACTUAL=$("$GENERATE_KEYS" -p)
+          EXPECTED="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' Resources/Info.plist)"
+          ACTUAL="$("$GENERATE_KEYS" -p)"
           if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-            echo "::error::SUPublicEDKey in Info.plist does not match SPARKLE_PRIVATE_KEY."
+            echo "::error::SPARKLE_PRIVATE_KEY does not match SUPublicEDKey in Info.plist."
+            echo "  Info.plist: $EXPECTED"
+            echo "  secret:     $ACTUAL"
             exit 1
           fi
           echo "Sparkle key matches Info.plist."
 
+      # A Developer ID certificate when the secrets hold one, which also turns on notarizing.
+      # Otherwise a self-signed one, which at least keeps the signature stable across updates, and
+      # ad-hoc with neither. Imported into a throwaway keychain that the last step deletes.
+      - name: Import the code signing identity
+        id: codesign
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          CODESIGN_P12_BASE64: ${{ secrets.CODESIGN_P12_BASE64 }}
+          CODESIGN_P12_PASSWORD: ${{ secrets.CODESIGN_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$DEVELOPER_ID_P12_BASE64" ]]; then
+            P12_BASE64="$DEVELOPER_ID_P12_BASE64" P12_PASSWORD="$DEVELOPER_ID_P12_PASSWORD" MODE=notarize
+          elif [[ -n "$CODESIGN_P12_BASE64" && -n "$CODESIGN_P12_PASSWORD" ]]; then
+            P12_BASE64="$CODESIGN_P12_BASE64" P12_PASSWORD="$CODESIGN_P12_PASSWORD" MODE=self-signed
+          else
+            echo "::warning::No DEVELOPER_ID_P12_BASE64 or CODESIGN_P12_BASE64 secret, so this release is ad-hoc signed."
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/codesign.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          ( umask 077; printf '%s' "$P12_BASE64" | base64 -D > "$RUNNER_TEMP/codesign.p12" )
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Six hours before it locks again, longer than any notarization wait.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/codesign.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/codesign.p12"
+          # Lets codesign use the key without the permission prompt nobody is there to answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          if [[ "$MODE" == "notarize" ]]; then
+            # By name, which release.sh checks says Developer ID Application.
+            IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -nE 's/.*"(Developer ID Application[^"]*)".*/\1/p' | head -1)"
+          else
+            # By SHA-1, which names exactly this certificate. Not -v: a self-signed identity is
+            # untrusted, which -v hides, and codesign signs with it all the same.
+            IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | awk '/^ *[0-9]+\) [0-9A-F]+ / && length($2) == 40 { if (!found) found = $2 } END { print found }')"
+          fi
+          if [[ -z "$IDENTITY" ]]; then
+            echo "::error::The certificate secret holds no usable code signing identity."
+            exit 1
+          fi
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Signing with $IDENTITY ($MODE)."
+
       - name: Store notarization credentials
-        if: steps.mode.outputs.mode == 'notarize'
+        if: steps.codesign.outputs.mode == 'notarize'
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
@@ -111,107 +211,142 @@ jobs:
             --apple-id "$NOTARY_APPLE_ID" \
             --team-id "$NOTARY_TEAM_ID" \
             --password "$NOTARY_PASSWORD" \
-            --keychain "$RUNNER_TEMP/build.keychain-db"
+            --keychain "$RUNNER_TEMP/codesign.keychain-db"
 
-      # Run again here because nothing ties a tag to a green CI run.
+      # The same suite CI runs, run again here: a tag is its own trigger, so nothing ties it to a
+      # green run on the commit it points at.
       - name: Test
         run: swift test
 
-      # From the gh-pages branch rather than the Pages URL, which 404s with Pages off and serves a
-      # cached copy for a few minutes after a publish.
-      - name: Seed the appcast from gh-pages
-        run: |
-          set -euo pipefail
-          mkdir -p build/releases
-          # Exit 2 means no such branch, which is the first release. Anything else is a failure.
-          status=0
-          git ls-remote --exit-code --heads origin gh-pages > /dev/null || status=$?
-          if [[ "$status" == 2 ]]; then
-            echo "No gh-pages branch yet. This release starts the feed."
-            exit 0
-          elif [[ "$status" != 0 ]]; then
-            echo "::error::could not query origin for gh-pages (git ls-remote exit $status)"
-            exit 1
-          fi
-          git fetch origin gh-pages
-          if git cat-file -e origin/gh-pages:appcast.xml 2> /dev/null; then
-            git show origin/gh-pages:appcast.xml > build/releases/appcast.xml
-          else
-            echo "gh-pages has no appcast.xml yet. This release starts the feed."
-          fi
-
-      # The same script a release by hand uses, so it can't quietly drift from CI.
+      # The same script a release checked by hand runs. It reads the feed so far from gh-pages and
+      # writes the extended one to build/releases/appcast.xml. Its build output is the build number
+      # it actually shipped, which it may have raised.
       - name: Build and sign
+        id: release
         env:
+          SPARKLE_KEY_FILE: ${{ runner.temp }}/sparkle_key
           VERSION: ${{ steps.version.outputs.version }}
           BUILD: ${{ steps.version.outputs.build }}
+          BETA: ${{ steps.version.outputs.beta }}
+          REUSE: ${{ steps.existing.outputs.reuse }}
+          MODE: ${{ steps.codesign.outputs.mode }}
+          CODESIGN_IDENTITY: ${{ steps.codesign.outputs.identity }}
           NOTARY_PROFILE: Halo
-          DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/
         run: |
-          if [[ "${{ steps.mode.outputs.mode }}" == "notarize" ]]; then
-            ./release.sh --notarize
-          else
-            ./release.sh --adhoc
+          set -euo pipefail
+          if [[ "$REUSE" == "1" ]]; then
+            export EXISTING_ZIP="build/releases/Halo-$VERSION.zip"
           fi
+          ARGS=()
+          [[ "$BETA" == "1" ]] && ARGS+=(--beta)
+          [[ "$MODE" == "notarize" ]] && ARGS+=(--notarize)
+          ./release.sh ${ARGS[@]+"${ARGS[@]}"}
 
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
-          MODE: ${{ steps.mode.outputs.mode }}
+          BETA: ${{ steps.version.outputs.beta }}
+          MODE: ${{ steps.codesign.outputs.mode }}
+          EXISTS: ${{ steps.existing.outputs.exists }}
+          REUSE: ${{ steps.existing.outputs.reuse }}
         run: |
           set -euo pipefail
           ASSET="build/releases/Halo-$VERSION.zip"
           [[ -f "$ASSET" ]] || { echo "::error::missing $ASSET"; exit 1; }
-          NOTES=""
-          if [[ "$MODE" == "adhoc" ]]; then
-            NOTES=$'This build is ad-hoc signed and not notarized, so macOS blocks the first launch.\nRight-click Halo.app and choose Open, or run `xattr -cr /Applications/Halo.app`.\n\n'
+          if [[ "$REUSE" == "1" ]]; then
+            echo "$TAG is already released with this zip."
+            exit 0
           fi
+          if [[ "$EXISTS" == "1" ]]; then
+            gh release upload "$TAG" "$ASSET"
+            exit 0
+          fi
+          # A beta is a prerelease and never "Latest", or releases/latest would hand it to everyone.
+          PRERELEASE=()
+          if [[ "$BETA" == "1" ]]; then
+            PRERELEASE=(--prerelease --latest=false)
+          fi
+          NOTES=""
+          if [[ "$MODE" != "notarize" ]]; then
+            SIGNATURE="ad-hoc signed"
+            [[ "$MODE" == "self-signed" ]] && SIGNATURE="self-signed"
+            NOTES="This build is $SIGNATURE"$' and not notarized, so macOS blocks the first launch.\nLaunch it once and dismiss the dialog, then click Open Anyway in System Settings > Privacy & Security.\nOr run `xattr -cr /Applications/Halo.app` in Terminal. Right-click > Open no longer gets past Gatekeeper.\n\n'
+          fi
+          # --generate-notes adds the changes since the last tag after the notice above.
           gh release create "$TAG" "$ASSET" \
             --title "Halo $VERSION" \
             --notes "$NOTES" \
-            --generate-notes
+            --generate-notes \
+            ${PRERELEASE[@]+"${PRERELEASE[@]}"}
 
-      # Only after the release uploads. An entry pointing at a missing zip is an update every
-      # install tries and fails.
+      # Last, and only on success: a feed entry pointing at a release that failed to upload is an
+      # update every client tries and fails to install.
+      #
+      # Releases run side by side, so the feed built above may be stale by now. Each attempt has
+      # release.sh fetch gh-pages and add this release's zip to the feed as it is now (or check the
+      # entry already there, on a re-run), then commits on top of exactly the commit it read: if
+      # another release pushed in between, the push is rejected and the next attempt starts over.
       - name: Publish the appcast
         env:
+          SPARKLE_KEY_FILE: ${{ runner.temp }}/sparkle_key
           VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.release.outputs.build }}
+          BETA: ${{ steps.version.outputs.beta }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # An orphan branch, so Pages serves the feed and not the source.
-          WORKTREE="$RUNNER_TEMP/pages"
-          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
-            git fetch origin gh-pages
-            git worktree add "$WORKTREE" origin/gh-pages
-            git -C "$WORKTREE" checkout -B gh-pages
-          else
-            git worktree add --detach "$WORKTREE"
-            git -C "$WORKTREE" checkout --orphan gh-pages
-            git -C "$WORKTREE" rm -rf . > /dev/null 2>&1 || true
-          fi
-          cp build/releases/appcast.xml "$WORKTREE/appcast.xml"
-          # Keeps Jekyll from processing the XML.
-          touch "$WORKTREE/.nojekyll"
-          git -C "$WORKTREE" add appcast.xml .nojekyll
-          if git -C "$WORKTREE" diff --cached --quiet; then
-            echo "Appcast unchanged."
-          else
-            git -C "$WORKTREE" commit -m "Appcast: Halo $VERSION"
-            git -C "$WORKTREE" push origin gh-pages
+          ARGS=()
+          if [[ "$BETA" == "1" ]]; then
+            ARGS=(--beta)
           fi
 
-      # Carries the shipped version to the default branch so local builds report it. Through the
-      # contents API so GitHub signs the commit, and conditioned on the file's sha so it refuses
-      # rather than overwrites if the branch changed it meanwhile.
+          WORKTREE="$RUNNER_TEMP/pages"
+          for attempt in 1 2 3 4 5; do
+            EXISTING_ZIP="build/releases/Halo-$VERSION.zip" ./release.sh ${ARGS[@]+"${ARGS[@]}"}
+
+            git worktree remove --force "$WORKTREE" > /dev/null 2>&1 || true
+            # An orphan branch, so Pages serves the feed and not the source.
+            # origin/gh-pages is what release.sh just fetched, so the commit sits on what it read.
+            if git rev-parse --verify --quiet refs/remotes/origin/gh-pages > /dev/null; then
+              git worktree add --detach "$WORKTREE" origin/gh-pages
+              git -C "$WORKTREE" checkout -B gh-pages
+            else
+              git worktree add --detach "$WORKTREE"
+              git branch -D gh-pages > /dev/null 2>&1 || true
+              git -C "$WORKTREE" checkout --orphan gh-pages
+              git -C "$WORKTREE" rm -rf . > /dev/null 2>&1 || true
+            fi
+
+            cp build/releases/appcast.xml "$WORKTREE/appcast.xml"
+            # Keeps Jekyll from processing the XML.
+            touch "$WORKTREE/.nojekyll"
+
+            git -C "$WORKTREE" add appcast.xml .nojekyll
+            if git -C "$WORKTREE" diff --cached --quiet; then
+              echo "Appcast unchanged."
+              exit 0
+            fi
+            git -C "$WORKTREE" commit -m "Appcast: Halo $VERSION"
+            if git -C "$WORKTREE" push origin gh-pages; then
+              exit 0
+            fi
+            echo "::warning::gh-pages moved while publishing (attempt $attempt); regenerating the feed."
+          done
+          echo "::error::could not publish the appcast after 5 attempts"
+          exit 1
+
+      # release.sh stamped the version into this checkout's Info.plist; this carries it to the
+      # default branch, so a local build reports what was last shipped. Last, so a failed release
+      # never bumps the version. Through the contents API: the commit is signed by GitHub, and the
+      # blob sha makes the write refuse rather than overwrite if the branch changed in between.
       - name: Record the version on the default branch
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-          BUILD: ${{ steps.version.outputs.build }}
+          BUILD: ${{ steps.release.outputs.build }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -221,7 +356,7 @@ jobs:
           gh api "repos/$REPO/contents/$FILE?ref=$BRANCH" > "$RUNNER_TEMP/current.json"
           SHA=$(jq -r .sha "$RUNNER_TEMP/current.json")
           jq -r .content "$RUNNER_TEMP/current.json" | base64 -D > "$PLIST"
-          # Same substitution as stamp_template in release.sh.
+
           stamp() {
             KEY="$1" VALUE="$2" perl -0pi -e \
               's{(<key>\Q$ENV{KEY}\E</key>\s*<string>)[^<]*(</string>)}{$1$ENV{VALUE}$2}' "$PLIST"
@@ -237,13 +372,24 @@ jobs:
             echo "$BRANCH already records $VERSION ($BUILD)."
             exit 0
           fi
-          gh api -X PUT "repos/$REPO/contents/$FILE" \
+          COMMIT=$(gh api -X PUT "repos/$REPO/contents/$FILE" \
             -f message="Record Halo $VERSION ($BUILD) in Info.plist" \
             -f content="$(base64 -i "$PLIST")" \
             -f sha="$SHA" \
             -f branch="$BRANCH" \
-            --jq .commit.sha
+            --jq .commit.sha)
+          echo "Committed $COMMIT to $BRANCH."
 
-      - name: Clean up the keychain
+      # Even when a step above failed: the key file must not outlive the job.
+      - name: Remove the signing key file
         if: always()
-        run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
+        run: rm -f "$RUNNER_TEMP/sparkle_key"
+
+      # The same for the code signing identity, if one was imported.
+      - name: Remove the code signing keychain
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/codesign.p12"
+          if [[ -f "$RUNNER_TEMP/codesign.keychain-db" ]]; then
+            security delete-keychain "$RUNNER_TEMP/codesign.keychain-db"
+          fi

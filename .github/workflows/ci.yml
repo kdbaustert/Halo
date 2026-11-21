@@ -14,7 +14,7 @@ jobs:
   test:
     name: Build and test
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -55,4 +55,10 @@ jobs:
           do
             [[ -e "$path" ]] || { echo "missing: $path" >&2; exit 1; }
           done
+          # A local build must never update itself, so it must carry no feed.
+          if /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
+            echo "a development build carries SUFeedURL, so it would update itself" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict "$APP"
           echo "bundle OK"

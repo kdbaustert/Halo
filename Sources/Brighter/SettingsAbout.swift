@@ -41,6 +41,13 @@ struct AboutSettings: View {
                         get: { updater.automaticallyDownloads },
                         set: { updater.automaticallyDownloads = $0 }))
                     .disabled(!Updater.isConfigured || !updater.automaticallyChecks)
+                SettingsToggle(
+                    title: "Receive beta updates",
+                    subtitle: "Get new versions before they're released to everyone.",
+                    isOn: Binding(
+                        get: { updater.receivesBetas },
+                        set: { updater.receivesBetas = $0 }))
+                    .disabled(!Updater.isConfigured)
             }
 
             SettingsSection(title: "Build") {

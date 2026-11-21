@@ -75,7 +75,7 @@ if [[ "${RELEASE:-0}" != "1" ]]; then
 fi
 
 # Ad-hoc by default. Halo asks for no folder or privacy access, so there's no grant for a changing
-# code hash to invalidate. release.sh passes a Developer ID and HARDENED=1 for notarizing.
+# code hash to invalidate. release.sh passes the workflow's identity, and HARDENED=1 for notarizing.
 IDENTITY="${CODESIGN_IDENTITY:--}"
 SIGN_ARGS=(--force --sign "$IDENTITY")
 if [[ "${HARDENED:-0}" == "1" ]]; then
@@ -83,7 +83,9 @@ if [[ "${HARDENED:-0}" == "1" ]]; then
     # signature valid after the certificate expires.
     SIGN_ARGS+=(--options runtime --timestamp)
 fi
-if [[ "$IDENTITY" != "-" ]] && ! security find-identity -v -p codesigning | grep -F -- "$IDENTITY" >/dev/null; then
+# No `-v`: it lists only trusted identities, and the release workflow's self-signed one is
+# untrusted on a runner. codesign signs with it all the same.
+if [[ "$IDENTITY" != "-" ]] && ! security find-identity -p codesigning | grep -F -- "$IDENTITY" >/dev/null; then
     echo "==> ERROR: signing identity \"$IDENTITY\" not found in the keychain" >&2
     exit 1
 fi

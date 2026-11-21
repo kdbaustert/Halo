@@ -30,14 +30,15 @@ brightness is at 100% again.
 Download the latest zip from [Releases](https://github.com/kdbaustert/Halo/releases), unzip it and
 move Halo.app to /Applications.
 
-Releases are ad-hoc signed, not notarized, so macOS blocks the first launch. Right-click Halo.app
-and choose Open, or run `xattr -cr /Applications/Halo.app`. Halo asks for no folder or privacy
+Releases aren't notarized, so macOS blocks the first launch. Launch Halo once and dismiss the
+dialog, then click Open Anyway in System Settings > Privacy & Security. Or run
+`xattr -cr /Applications/Halo.app`. Right-click > Open no longer works on current macOS. Halo asks for no folder or privacy
 access, so there's nothing to approve after that.
 
 ## Updates
 
 Halo checks for a new version once a day and asks before installing it. You can check by hand or
-change both settings in Settings > About. Every update is checked against Halo's signing key
+change both settings in Settings > About, where you can also opt in to beta updates. Every update is checked against Halo's signing key
 before it installs.
 
 A copy you build yourself never updates itself, so it can't be replaced by the published version.
@@ -72,7 +73,9 @@ swift test            # the test suite, which CI runs on every push and pull req
 Building needs Xcode or the Xcode command line tools.
 
 To cut a release, push a `v` tag such as `v0.2.0`. The release workflow builds, tests, publishes
-the zip and updates the appcast. `./release.sh --adhoc` runs the same steps locally.
+the zip and adds it to the appcast. A tag with a hyphen, like `v0.3.0-beta`, ships to beta copies
+only. To check a release locally first, run `VERSION=0.2.0 BUILD=40 ./release.sh` (add `--beta`
+for a beta).
 
 ## License
 

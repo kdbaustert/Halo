@@ -13,6 +13,9 @@ final class Updater: ObservableObject {
     /// Nil in a build with no feed, so nothing schedules checks there. Every accessor below is
     /// then a no-op.
     private let controller: SPUStandardUpdaterController?
+    /// Answers Sparkle's "which channels?" before each check. Held here because Sparkle keeps only
+    /// a weak reference to its delegate.
+    private let channels = UpdateChannels()
 
     /// False while a check is running, so the button can't start a second one.
     @Published private(set) var canCheck = true
@@ -26,6 +29,17 @@ final class Updater: ObservableObject {
         set {
             objectWillChange.send()
             controller?.updater.automaticallyChecksForUpdates = newValue
+        }
+    }
+
+    /// Opt in to the beta channel. Off by default: betas come first and are less proven.
+    var receivesBetas: Bool {
+        get { UpdateChannels.receivesBetas }
+        set {
+            objectWillChange.send()
+            UpdateChannels.receivesBetas = newValue
+            // A beta already in the feed shouldn't wait for tomorrow's check.
+            if newValue { controller?.updater.resetUpdateCycleAfterShortDelay() }
         }
     }
 
@@ -48,7 +62,7 @@ final class Updater: ObservableObject {
             return
         }
         let controller = SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            startingUpdater: true, updaterDelegate: channels, userDriverDelegate: nil)
         self.controller = controller
         canCheck = controller.updater.canCheckForUpdates
         lastCheck = controller.updater.lastUpdateCheckDate
@@ -60,6 +74,17 @@ final class Updater: ObservableObject {
             controller.updater.observe(\.lastUpdateCheckDate, options: [.new]) {
                 [weak self] updater, _ in
                 MainActor.assumeIsolated { self?.lastCheck = updater.lastUpdateCheckDate }
+            },
+            // Sparkle's own update alert has an "Automatically download and install" checkbox, and
+            // its permission prompt one for checking. Both write past the setters above, so the
+            // Settings toggles would show a stale value without these.
+            controller.updater.observe(\.automaticallyDownloadsUpdates, options: [.new]) {
+                [weak self] _, _ in
+                MainActor.assumeIsolated { self?.objectWillChange.send() }
+            },
+            controller.updater.observe(\.automaticallyChecksForUpdates, options: [.new]) {
+                [weak self] _, _ in
+                MainActor.assumeIsolated { self?.objectWillChange.send() }
             },
         ]
     }
@@ -78,5 +103,23 @@ final class Updater: ObservableObject {
         let feed = info?["SUFeedURL"] as? String ?? ""
         let key = info?["SUPublicEDKey"] as? String ?? ""
         return !feed.isEmpty && !key.isEmpty
+    }
+}
+
+/// Which of the feed's channels this copy accepts. Stable releases carry no channel and reach
+/// everyone; betas carry "beta" and are offered only to copies that opted in.
+///
+/// The preference lives in `UserDefaults` rather than on the main-actor `Updater` because Sparkle
+/// asks from its own thread, and `UserDefaults` is safe to read from any.
+final class UpdateChannels: NSObject, SPUUpdaterDelegate {
+    private static let betaKey = "ReceiveBetaUpdates"
+
+    static var receivesBetas: Bool {
+        get { UserDefaults.standard.bool(forKey: betaKey) }
+        set { UserDefaults.standard.set(newValue, forKey: betaKey) }
+    }
+
+    func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+        Self.receivesBetas ? ["beta"] : []
     }
 }
