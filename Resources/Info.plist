@@ -19,7 +19,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1</string>
+    <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -28,5 +28,24 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Kenny Baustert. Licensed under the GPL v3.</string>
+    <!-- Pages rather than raw.githubusercontent.com: it's a CDN with the right content type, and
+         this URL is baked into every shipped copy. build.sh strips it from local builds. -->
+    <key>SUFeedURL</key>
+    <string>https://kdbaustert.github.io/Halo/appcast.xml</string>
+    <!-- Public half of the EdDSA key Cmd-Tab also signs with. Sparkle checks every download
+         against it. The private half is in the login keychain and the SPARKLE_PRIVATE_KEY
+         secret. -->
+    <key>SUPublicEDKey</key>
+    <string>FYMMALSs2mAccV/rUgQcByyY+mdkpXSBA/nD4JpwvT0=</string>
+    <!-- Checks daily, but asks before installing: an update relaunches Halo and drops the boost
+         for a moment. Both can be changed in Settings > About. -->
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

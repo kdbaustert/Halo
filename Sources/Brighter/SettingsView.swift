@@ -3,6 +3,7 @@ import SwiftUI
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case shortcuts
+    case about
 
     var id: String { rawValue }
 
@@ -10,6 +11,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .shortcuts: return "Shortcuts"
+        case .about: return "About"
         }
     }
 
@@ -17,14 +19,16 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape.2.fill"
         case .shortcuts: return "command.circle.fill"
+        case .about: return "info.circle.fill"
         }
     }
 
-    /// The same badge colours Cmd-Tab gives these two tabs.
+    /// The same badge colours Cmd-Tab gives these tabs.
     var gradient: [Color] {
         switch self {
         case .general: return [Color(rgb: 0x8E8E93), Color(rgb: 0x6C6C70)]
         case .shortcuts: return [Color(rgb: 0x6E7BFF), Color(rgb: 0x3B45D6)]
+        case .about: return [Color(rgb: 0xB8B8BE), Color(rgb: 0x95959B)]
         }
     }
 }
@@ -86,6 +90,7 @@ struct SettingsRootView: View {
         switch tab {
         case .general: GeneralSettings(settings: settings)
         case .shortcuts: ShortcutSettings(settings: settings)
+        case .about: AboutSettings()
         }
     }
 }

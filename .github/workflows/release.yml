@@ -1,0 +1,249 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds, signs, publishes the zip and adds it to the appcast that every
+# install checks daily. It notarizes once a Developer ID certificate secret exists, and releases
+# ad-hoc until then.
+on:
+  push:
+    tags: ['v*']
+  # Re-runs a release that failed partway, for example on Apple's side.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v0.2.0)'
+        required: true
+
+# Two releases at once would race on the appcast and one would lose its entry.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: macos-26
+    # Notarizing usually takes minutes but sometimes much longer.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          # The build number is the commit count, which a shallow clone gets wrong.
+          fetch-depth: 0
+
+      - name: Derive version from the tag
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          # Sparkle only offers a higher CFBundleVersion, and the commit count only goes up.
+          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Determine release mode
+        id: mode
+        run: |
+          if [[ -n "${{ secrets.DEVELOPER_ID_P12_BASE64 }}" ]]; then
+            echo "mode=notarize" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Its own keychain, unlocked with a known password and gone with the runner.
+      - name: Import the Developer ID certificate
+        if: steps.mode.outputs.mode == 'notarize'
+        env:
+          CERT_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # No lock timeout, or it locks again partway through notarizing.
+          security set-keychain-settings -u "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Otherwise codesign waits on a GUI prompt nobody can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # Added to the search list, not replacing it, so the system roots stay reachable.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      # Signs the appcast entries. If it doesn't match SUPublicEDKey, every install rejects every
+      # update without saying why, so this checks before building anything.
+      - name: Import the Sparkle signing key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          swift package resolve
+          GENERATE_KEYS="$(find .build/artifacts -type f -name generate_keys -perm -u+x -print -quit)"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_key"
+          "$GENERATE_KEYS" -f "$RUNNER_TEMP/sparkle_key"
+          rm -f "$RUNNER_TEMP/sparkle_key"
+          EXPECTED=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' Resources/Info.plist)
+          ACTUAL=$("$GENERATE_KEYS" -p)
+          if [[ "$EXPECTED" != "$ACTUAL" ]]; then
+            echo "::error::SUPublicEDKey in Info.plist does not match SPARKLE_PRIVATE_KEY."
+            exit 1
+          fi
+          echo "Sparkle key matches Info.plist."
+
+      - name: Store notarization credentials
+        if: steps.mode.outputs.mode == 'notarize'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "Halo" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --keychain "$RUNNER_TEMP/build.keychain-db"
+
+      # Run again here because nothing ties a tag to a green CI run.
+      - name: Test
+        run: swift test
+
+      # From the gh-pages branch rather than the Pages URL, which 404s with Pages off and serves a
+      # cached copy for a few minutes after a publish.
+      - name: Seed the appcast from gh-pages
+        run: |
+          set -euo pipefail
+          mkdir -p build/releases
+          # Exit 2 means no such branch, which is the first release. Anything else is a failure.
+          status=0
+          git ls-remote --exit-code --heads origin gh-pages > /dev/null || status=$?
+          if [[ "$status" == 2 ]]; then
+            echo "No gh-pages branch yet. This release starts the feed."
+            exit 0
+          elif [[ "$status" != 0 ]]; then
+            echo "::error::could not query origin for gh-pages (git ls-remote exit $status)"
+            exit 1
+          fi
+          git fetch origin gh-pages
+          if git cat-file -e origin/gh-pages:appcast.xml 2> /dev/null; then
+            git show origin/gh-pages:appcast.xml > build/releases/appcast.xml
+          else
+            echo "gh-pages has no appcast.xml yet. This release starts the feed."
+          fi
+
+      # The same script a release by hand uses, so it can't quietly drift from CI.
+      - name: Build and sign
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+          NOTARY_PROFILE: Halo
+          DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/
+        run: |
+          if [[ "${{ steps.mode.outputs.mode }}" == "notarize" ]]; then
+            ./release.sh --notarize
+          else
+            ./release.sh --adhoc
+          fi
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          set -euo pipefail
+          ASSET="build/releases/Halo-$VERSION.zip"
+          [[ -f "$ASSET" ]] || { echo "::error::missing $ASSET"; exit 1; }
+          NOTES=""
+          if [[ "$MODE" == "adhoc" ]]; then
+            NOTES=$'This build is ad-hoc signed and not notarized, so macOS blocks the first launch.\nRight-click Halo.app and choose Open, or run `xattr -cr /Applications/Halo.app`.\n\n'
+          fi
+          gh release create "$TAG" "$ASSET" \
+            --title "Halo $VERSION" \
+            --notes "$NOTES" \
+            --generate-notes
+
+      # Only after the release uploads. An entry pointing at a missing zip is an update every
+      # install tries and fails.
+      - name: Publish the appcast
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # An orphan branch, so Pages serves the feed and not the source.
+          WORKTREE="$RUNNER_TEMP/pages"
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+            git fetch origin gh-pages
+            git worktree add "$WORKTREE" origin/gh-pages
+            git -C "$WORKTREE" checkout -B gh-pages
+          else
+            git worktree add --detach "$WORKTREE"
+            git -C "$WORKTREE" checkout --orphan gh-pages
+            git -C "$WORKTREE" rm -rf . > /dev/null 2>&1 || true
+          fi
+          cp build/releases/appcast.xml "$WORKTREE/appcast.xml"
+          # Keeps Jekyll from processing the XML.
+          touch "$WORKTREE/.nojekyll"
+          git -C "$WORKTREE" add appcast.xml .nojekyll
+          if git -C "$WORKTREE" diff --cached --quiet; then
+            echo "Appcast unchanged."
+          else
+            git -C "$WORKTREE" commit -m "Appcast: Halo $VERSION"
+            git -C "$WORKTREE" push origin gh-pages
+          fi
+
+      # Carries the shipped version to the default branch so local builds report it. Through the
+      # contents API so GitHub signs the commit, and conditioned on the file's sha so it refuses
+      # rather than overwrites if the branch changed it meanwhile.
+      - name: Record the version on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          FILE=Resources/Info.plist
+          PLIST="$RUNNER_TEMP/Info.plist"
+          gh api "repos/$REPO/contents/$FILE?ref=$BRANCH" > "$RUNNER_TEMP/current.json"
+          SHA=$(jq -r .sha "$RUNNER_TEMP/current.json")
+          jq -r .content "$RUNNER_TEMP/current.json" | base64 -D > "$PLIST"
+          # Same substitution as stamp_template in release.sh.
+          stamp() {
+            KEY="$1" VALUE="$2" perl -0pi -e \
+              's{(<key>\Q$ENV{KEY}\E</key>\s*<string>)[^<]*(</string>)}{$1$ENV{VALUE}$2}' "$PLIST"
+            if [[ "$(/usr/libexec/PlistBuddy -c "Print :$1" "$PLIST")" != "$2" ]]; then
+              echo "::error::could not stamp $1=$2 into $FILE"
+              exit 1
+            fi
+          }
+          cp "$PLIST" "$PLIST.before"
+          stamp CFBundleShortVersionString "$VERSION"
+          stamp CFBundleVersion "$BUILD"
+          if cmp -s "$PLIST" "$PLIST.before"; then
+            echo "$BRANCH already records $VERSION ($BUILD)."
+            exit 0
+          fi
+          gh api -X PUT "repos/$REPO/contents/$FILE" \
+            -f message="Record Halo $VERSION ($BUILD) in Info.plist" \
+            -f content="$(base64 -i "$PLIST")" \
+            -f sha="$SHA" \
+            -f branch="$BRANCH" \
+            --jq .commit.sha
+
+      - name: Clean up the keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # Keyed on Package.resolved, so a miss means the Sparkle pin changed.
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test --skip-build
+
+      # Proves the bundle still assembles and Sparkle is embedded and signed, which the compiler
+      # can't check. Signed ad-hoc, since the runner has no identity.
+      - name: Assemble app bundle
+        run: ./build.sh
+
+      - name: Check the bundle came out whole
+        run: |
+          set -euo pipefail
+          APP=build/Halo.app
+          for path in \
+            "$APP/Contents/MacOS/Halo" \
+            "$APP/Contents/Info.plist" \
+            "$APP/Contents/Resources/AppIcon.icns" \
+            "$APP/Contents/Frameworks/Sparkle.framework"
+          do
+            [[ -e "$path" ]] || { echo "missing: $path" >&2; exit 1; }
+          done
+          echo "bundle OK"

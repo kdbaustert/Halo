@@ -44,6 +44,12 @@ struct BrighterApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var reopen: (() -> Void)?
 
+    /// Built here rather than left to the About tab, which may never be opened, and without the
+    /// updater there's no scheduled check. Skipped in a build with no feed.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if Updater.isConfigured { _ = Updater.shared }
+    }
+
     func applicationShouldHandleReopen(
         _ sender: NSApplication, hasVisibleWindows flag: Bool
     ) -> Bool {
