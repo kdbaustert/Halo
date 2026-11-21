@@ -1,0 +1,15 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Halo</title>
+        <item>
+            <title>0.2.0</title>
+            <pubDate>Sat, 21 Nov 2026 14:25:32 +0000</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/kdbaustert/Halo/releases/tag/v0.2.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/kdbaustert/Halo/releases/download/v0.2.0/Halo-0.2.0.zip" length="2255338" type="application/octet-stream" sparkle:edSignature="p8Hf9VOMaSm5EM4d/lXxrtUOca9PRK/OssDrWath9hJFVKdA6dUGYRFcxETtM2smkgrUftn81+tQfuKXx3TtCA=="/>
+        </item>
+    </channel>
+</rss>
