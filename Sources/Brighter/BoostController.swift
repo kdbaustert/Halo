@@ -53,9 +53,10 @@ final class BoostController: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var hasCapableDisplay = false
 
-    /// ColorSync and display wake put the system's table back without telling anyone, so the
-    /// boosted table is rewritten on this interval. Writing the same table doesn't flicker.
-    private static let reapplyInterval: TimeInterval = 2
+    /// ColorSync, display wake and other apps put the system's table back without telling anyone,
+    /// so the boosted table is rewritten on this interval. The screen sits unboosted until the
+    /// next write, so it's kept short. Writing the same table doesn't flicker.
+    private static let reapplyInterval: TimeInterval = 0.5
     /// Only while waiting. With the boost on, brightness changes post screen-parameter
     /// notifications, and the reapply timer catches any that don't.
     private static let brightnessPollInterval: TimeInterval = 1
