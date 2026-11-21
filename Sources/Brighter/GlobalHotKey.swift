@@ -15,6 +15,8 @@ final class GlobalHotKey {
     private let identifier: EventHotKeyID
     private let action: () -> Void
     private var hotKeyRef: EventHotKeyRef?
+    /// Without a handler a registered combo would do nothing, so `register` reports this instead.
+    private var handlerStatus: OSStatus = noErr
 
     /// The handler stays installed for the life of the app, which is also this object's life.
     /// Every handler on the application target sees every hot key press, so `id` has to be unique
@@ -24,7 +26,7 @@ final class GlobalHotKey {
         self.action = action
         var pressed = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(
+        handlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, event, userData in
                 guard let event, let userData else { return OSStatus(eventNotHandledErr) }
@@ -51,6 +53,7 @@ final class GlobalHotKey {
     func register(_ combo: KeyCombo?) throws(RegistrationError) {
         unregister()
         guard let combo else { return }
+        guard handlerStatus == noErr else { throw .refused(handlerStatus) }
         let status = RegisterEventHotKey(
             UInt32(combo.keyCode), combo.carbonModifiers, identifier,
             GetApplicationEventTarget(), 0, &hotKeyRef)
