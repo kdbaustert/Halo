@@ -133,6 +133,8 @@ final class BoostController: ObservableObject {
         guard isEnabled else { return }
         do {
             try applyBoosters()
+            // Setting it publishes even when it's already nil, which redraws the menu bar icon.
+            if errorMessage != nil { errorMessage = nil }
         } catch {
             report(error)
         }
