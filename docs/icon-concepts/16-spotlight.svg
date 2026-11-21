@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <clipPath id="clip"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity=".32"/>
+    </filter>
+    <filter id="blur20" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="20"/></filter>
+    <filter id="blur40" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="40"/></filter>
+    <filter id="blur8" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8"/></filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity=".35"/>
+    </filter>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".22"/>
+      <stop offset=".45" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b1055"/><stop offset="1" stop-color="#7597de"/></linearGradient><linearGradient id="beam" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff3c4" stop-opacity="0.75"/><stop offset="1" stop-color="#fff3c4" stop-opacity="0"/></linearGradient><linearGradient id="h" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff6c9"/><stop offset="1" stop-color="#ffb800"/></linearGradient><linearGradient id="panel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/><stop offset="1" stop-color="#dfe8ff" stop-opacity="0.55"/></linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#000" filter="url(#shadow)"/>
+  <g clip-path="url(#clip)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#b)"/><path d="M300 300 L724 300 L860 760 L164 760z" fill="url(#beam)"/><ellipse cx="512" cy="300" rx="215" ry="66" fill="none" stroke="#ffd60a" stroke-width="54" filter="url(#blur20)"/><ellipse cx="512" cy="300" rx="215" ry="66" fill="none" stroke="url(#h)" stroke-width="34"/><ellipse cx="512" cy="760" rx="340" ry="60" fill="url(#panel)"/>
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  </g>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#fff" stroke-opacity=".18" stroke-width="2"/>
+</svg>

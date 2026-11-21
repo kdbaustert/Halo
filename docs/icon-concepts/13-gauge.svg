@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <clipPath id="clip"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity=".32"/>
+    </filter>
+    <filter id="blur20" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="20"/></filter>
+    <filter id="blur40" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="40"/></filter>
+    <filter id="blur8" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8"/></filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity=".35"/>
+    </filter>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".22"/>
+      <stop offset=".45" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2c2c2e"/><stop offset="1" stop-color="#0e0e10"/></linearGradient><linearGradient id="a" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#0a84ff"/><stop offset="0.55" stop-color="#e5f6ff"/><stop offset="1" stop-color="#ffcc00"/></linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#000" filter="url(#shadow)"/>
+  <g clip-path="url(#clip)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#b)"/><path d="M212.0 600.0 A300 300 0 0 1 812.0 600.0" fill="none" stroke="#3a3a3c" stroke-width="70" stroke-linecap="round"/><path d="M212.0 600.0 A300 300 0 0 1 812.0 600.0" fill="none" stroke="url(#a)" stroke-width="70" stroke-linecap="round"/><path d="M614.6 318.1 A300 300 0 0 1 812.0 600.0" fill="none" stroke="#ffcc00" stroke-width="70" stroke-linecap="round" filter="url(#blur20)" opacity=".8"/><line x1="702.0" y1="600.0" x2="732.0" y2="600.0" stroke="none" stroke-width="0" stroke-linecap="round" /><line x1="512" y1="600" x2="728.5" y2="475.0" stroke="#fff" stroke-width="22" stroke-linecap="round" filter="url(#soft)"/><circle cx="512" cy="600" r="44" fill="#f2f2f7" filter="url(#soft)"/><text x="512" y="780" text-anchor="middle" font-family="-apple-system, 'SF Pro Rounded', 'SF Pro Display', 'Helvetica Neue', sans-serif" font-weight="700" font-size="64" fill="#8e8e93" letter-spacing="8">NITS</text>
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  </g>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#fff" stroke-opacity=".18" stroke-width="2"/>
+</svg>
