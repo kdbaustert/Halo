@@ -65,6 +65,8 @@ final class BoostController: ObservableObject {
     private struct DisplayLayout: Equatable {
         let displayID: CGDirectDisplayID
         let frame: NSRect
+        /// A new profile means a new table, and the one each booster saved is the old one's.
+        let colorSpace: NSColorSpace?
     }
 
     private let logger = Logger(subsystem: "dev.kennyb.Brighter", category: "boost")
@@ -149,12 +151,16 @@ final class BoostController: ObservableObject {
         let screens = Self.capableScreens()
         hasCapableDisplay = !screens.isEmpty
         guard isEnabled else { return }
-        guard Self.layout(of: screens) != boostedLayout else {
+        let layout = Self.layout(of: screens)
+        guard layout != boostedLayout else {
             applyAll()
             return
         }
+        let profileChanged = layout.map(\.colorSpace) != boostedLayout.map(\.colorSpace)
         logger.info("Display layout changed; rebuilding boosters")
         stop()
+        // Stopping put back the old profile's table, so the boosters would save that again.
+        if profileChanged { CGDisplayRestoreColorSyncSettings() }
         start()
     }
 
@@ -209,7 +215,7 @@ final class BoostController: ObservableObject {
 
     private static func layout(of screens: [(NSScreen, CGDirectDisplayID)]) -> [DisplayLayout] {
         screens.map { screen, displayID in
-            DisplayLayout(displayID: displayID, frame: screen.frame)
+            DisplayLayout(displayID: displayID, frame: screen.frame, colorSpace: screen.colorSpace)
         }
     }
 
@@ -229,6 +235,7 @@ final class BoostController: ObservableObject {
         let app = NotificationCenter.default
         let workspace = NSWorkspace.shared.notificationCenter
         observe(app, NSApplication.didChangeScreenParametersNotification) { $0.rebuild() }
+        observe(app, NSScreen.colorSpaceDidChangeNotification) { $0.rebuild() }
         observe(workspace, NSWorkspace.didWakeNotification) { $0.applyAll() }
         observe(workspace, NSWorkspace.screensDidWakeNotification) { $0.applyAll() }
         // CoreGraphics also drops our tables when the process exits, but a clean quit shouldn't
