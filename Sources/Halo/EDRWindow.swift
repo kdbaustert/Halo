@@ -11,6 +11,8 @@ final class EDRWindow {
     private let window: NSWindow
     private let metalLayer: CAMetalLayer
     private let commandQueue: MTLCommandQueue
+    /// Nil until the first frame is on screen.
+    private var drawnBrightness: Float?
 
     init(screen: NSScreen) throws {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -32,6 +34,9 @@ final class EDRWindow {
         window.backgroundColor = .clear
         window.hasShadow = false
         window.ignoresMouseEvents = true
+        // Hide Halo, or Hide Others from another app while Settings is open, would otherwise take
+        // this window off screen and EDR mode with it.
+        window.canHide = false
         // Above fullscreen apps, so EDR mode doesn't drop when one covers the corner.
         window.level = .screenSaver
         window.collectionBehavior = [
@@ -50,27 +55,32 @@ final class EDRWindow {
             height: frame.height * screen.backingScaleFactor)
     }
 
+    /// Called on every reapply, so it does nothing when the pixel is already up. Redrawing it each
+    /// time kept about 84 MB of Metal buffers alive, which the driver frees a few seconds after the
+    /// last frame, and reordering a window that's already in front logs a line per call.
     func show(brightness: Float) {
-        window.orderFrontRegardless()
-        draw(brightness: Double(brightness))
+        if !window.occlusionState.contains(.visible) { window.orderFrontRegardless() }
+        if brightness != drawnBrightness { draw(brightness: brightness) }
     }
 
     func close() {
         window.close()
     }
 
-    private func draw(brightness: Double) {
+    private func draw(brightness: Float) {
         guard let drawable = metalLayer.nextDrawable(),
             let commandBuffer = commandQueue.makeCommandBuffer()
         else { return }
+        let level = Double(brightness)
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColor(
-            red: brightness, green: brightness, blue: brightness, alpha: 1)
+            red: level, green: level, blue: level, alpha: 1)
         commandBuffer.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        drawnBrightness = brightness
     }
 }

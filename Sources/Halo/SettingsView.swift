@@ -123,6 +123,10 @@ private struct GeneralSettings: View {
                     title: "Pause the boost when the screen is dimmed",
                     subtitle: Self.pauseSubtitle,
                     isOn: $settings.pausesWhenDimmed)
+                SettingsToggle(
+                    title: "Switch external displays to HDR while boosting",
+                    subtitle: "They can't be boosted without it. The screen blanks as it switches.",
+                    isOn: $settings.switchesOnHDR)
             }
         }
         // The item can be switched off in System Settings while this window is closed.
@@ -155,6 +159,8 @@ private struct ShortcutSettings: View {
                 }
             }
         }
+        // Switching tabs takes the recorder off screen with nothing left to show it's recording.
+        .onDisappear(perform: settings.stopRecordingShortcut)
     }
 
     /// The step is read from `BoostFactor` so the text can't drift from what a press does.

@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "Brighter",
+    name: "Halo",
     platforms: [.macOS(.v14)],
     dependencies: [
         // Auto-update. A binary XCFramework, so build.sh has to copy it into Contents/Frameworks,
@@ -11,18 +11,18 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "Brighter",
+            name: "Halo",
             dependencies: [.product(name: "Sparkle", package: "Sparkle")],
-            path: "Sources/Brighter",
+            path: "Sources/Halo",
             // Swift 6 language mode. Everything runs on the main actor: the menu, the EDR windows
             // and the gamma calls. Strict checking keeps it that way, so a later change that
             // touches a window or a gamma table from a background thread fails to compile.
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
-            name: "BrighterTests",
-            dependencies: ["Brighter"],
-            path: "Tests/BrighterTests",
+            name: "HaloTests",
+            dependencies: ["Halo"],
+            path: "Tests/HaloTests",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

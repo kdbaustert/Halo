@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct BrighterApp: App {
+struct HaloApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var controller: BoostController
     @StateObject private var settings: AppSettings
@@ -58,8 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Laid out like the system's own menu bar menus (Wi-Fi, Bluetooth): a header with the switch,
-/// then the rest as full-width items.
+/// Laid out like the system's own menu bar menus (Wi-Fi, Bluetooth): a header, a switch and
+/// slider for each kind of display, then the rest as full-width items.
 private struct BoostMenu: View {
     @ObservedObject var controller: BoostController
     let openSettings: () -> Void
@@ -67,13 +67,24 @@ private struct BoostMenu: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if controller.hasCapableDisplay {
-                strength
-            } else {
+            if controller.hasCapableBuiltIn {
+                strength(
+                    of: "Built-in Display", isOn: $controller.isBoostingBuiltIn,
+                    factor: $controller.builtInFactor)
+            }
+            if controller.hasCapableExternal {
+                strength(
+                    of: "External Displays", isOn: $controller.isBoostingExternal,
+                    factor: $controller.externalFactor)
+            }
+            if !controller.hasCapableDisplay {
                 note("No XDR or HDR display is connected.", color: .secondary)
             }
             if controller.isWaitingForFullBrightness {
                 note("Turns back on when brightness is at 100%.", color: .secondary)
+            }
+            if controller.isBuiltInPaused {
+                note("The built-in display rejoins at 100% brightness.", color: .secondary)
             }
             if let message = controller.errorMessage {
                 note(message, color: .red)
@@ -89,30 +100,34 @@ private struct BoostMenu: View {
     }
 
     private var header: some View {
-        HStack {
-            Text("Boost Brightness").font(.system(size: 13, weight: .semibold))
-            Spacer()
-            Toggle("Boost Brightness", isOn: $controller.isEnabled)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(!controller.hasCapableDisplay)
-        }
-        .padding(.horizontal, MenuItem.inset)
+        Text("Boost Brightness")
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, MenuItem.inset)
         .padding(.top, 6)
         .padding(.bottom, 12)
     }
 
-    private var strength: some View {
+    private func strength(
+        of title: String, isOn: Binding<Bool>, factor: Binding<Double>
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Slider(value: $controller.factor, in: BoostFactor.range)
+            HStack {
+                Text(title).font(.system(size: 12))
+                Spacer()
+                Toggle(title, isOn: isOn)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+            }
+            Slider(value: factor, in: BoostFactor.range)
                 .controlSize(.small)
-            Text("\(Int(((controller.factor - 1) * 100).rounded()))% brighter than normal")
+                .disabled(!isOn.wrappedValue)
+            Text("\(Int(((factor.wrappedValue - 1) * 100).rounded()))% brighter than normal")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, MenuItem.inset)
-        .padding(.bottom, 4)
+        .padding(.bottom, 8)
     }
 
     private func note(_ text: String, color: Color) -> some View {

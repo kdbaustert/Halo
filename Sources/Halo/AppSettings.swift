@@ -40,7 +40,8 @@ enum ShortcutAction: CaseIterable {
 }
 
 /// What the Settings window changes: the login item, restoring the boost at launch, pausing it
-/// on a dimmed screen, and the global shortcuts that toggle and adjust it.
+/// on a dimmed screen, switching external displays to HDR,
+/// and the global shortcuts that toggle and adjust it.
 @MainActor
 final class AppSettings: ObservableObject {
     @Published var restoresBoost: Bool {
@@ -51,6 +52,13 @@ final class AppSettings: ObservableObject {
         didSet {
             UserDefaults.standard.set(pausesWhenDimmed, forKey: Self.pausesWhenDimmedKey)
             controller.pausesWhenDimmed = pausesWhenDimmed
+        }
+    }
+
+    @Published var switchesOnHDR: Bool {
+        didSet {
+            UserDefaults.standard.set(switchesOnHDR, forKey: Self.switchesOnHDRKey)
+            controller.switchesOnHDR = switchesOnHDR
         }
     }
 
@@ -73,8 +81,9 @@ final class AppSettings: ObservableObject {
     private static let restoresBoostKey = "restoresBoost"
     private static let pausesWhenDimmedKey = "pausesWhenDimmed"
     private static let showsMenuBarIconKey = "showsMenuBarIcon"
+    private static let switchesOnHDRKey = "switchesOnHDR"
 
-    private let logger = Logger(subsystem: "dev.kennyb.Brighter", category: "settings")
+    private let logger = Logger(subsystem: "dev.kennyb.Halo", category: "settings")
     private let controller: BoostController
     /// Filled once in init and kept for the app's life, since each one installs a Carbon handler
     /// that's never removed.
@@ -91,6 +100,9 @@ final class AppSettings: ObservableObject {
         let pauses = defaults.object(forKey: Self.pausesWhenDimmedKey) as? Bool ?? true
         pausesWhenDimmed = pauses
         controller.pausesWhenDimmed = pauses
+        let switchesOnHDR = defaults.bool(forKey: Self.switchesOnHDRKey)
+        self.switchesOnHDR = switchesOnHDR
+        controller.switchesOnHDR = switchesOnHDR
         // Shown until it's switched off, so a first launch always has the icon.
         showsMenuBarIcon = defaults.object(forKey: Self.showsMenuBarIconKey) as? Bool ?? true
         launchesAtLogin = Self.isOn(SMAppService.mainApp.status)
@@ -190,6 +202,9 @@ final class AppSettings: ObservableObject {
             if let owner = actionUsing(combo), owner != action {
                 shortcutErrors[action] =
                     "\(combo.displayString) is already set for \(owner.title)."
+            } else if combo.isStandardAppShortcut {
+                shortcutErrors[action] =
+                    "\(combo.displayString) would stop working in every other app."
             } else {
                 setShortcut(combo, for: action)
             }
@@ -201,7 +216,7 @@ final class AppSettings: ObservableObject {
     /// Checked here so the error names the Halo action that has the combo instead of blaming
     /// another app.
     private func actionUsing(_ combo: KeyCombo) -> ShortcutAction? {
-        shortcuts.first { $0.value == combo }?.key
+        shortcuts.first { $0.value.usesSameKeys(as: combo) }?.key
     }
 
     private func registerShortcuts() {
@@ -217,8 +232,10 @@ final class AppSettings: ObservableObject {
         } catch {
             switch error {
             case .taken:
+                // Only a combo this process holds comes back as taken. macOS registers one
+                // another app has without complaint, so that can't be reported.
                 shortcutErrors[action] =
-                    "Another app already uses \(combo?.displayString ?? "it")."
+                    "Halo already uses \(combo?.displayString ?? "it")."
             case .refused(let status):
                 logger.error("RegisterEventHotKey failed: \(status)")
                 shortcutErrors[action] = "macOS refused this shortcut (error \(status))."
@@ -239,21 +256,28 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// Ignored with no capable display, the same as the menu's disabled switch.
+    /// Ignored with no capable display unless the boost is still on from before it went away,
+    /// the same as the menu's switch.
     private func perform(_ action: ShortcutAction) {
-        guard controller.hasCapableDisplay else { return }
+        guard controller.hasCapableDisplay || controller.isEnabled else { return }
         switch action {
         case .toggleBoost:
             controller.isEnabled.toggle()
         case .increaseBoost:
             // From off, the first press turns the boost on at the strength it had.
             if controller.isEnabled {
-                controller.factor = BoostFactor.stepped(controller.factor, by: 1)
+                stepFactors(by: 1)
             } else {
                 controller.isEnabled = true
             }
         case .decreaseBoost:
-            controller.factor = BoostFactor.stepped(controller.factor, by: -1)
+            stepFactors(by: -1)
         }
+    }
+
+    /// The shortcuts move the built-in display and the external ones together.
+    private func stepFactors(by steps: Int) {
+        controller.builtInFactor = BoostFactor.stepped(controller.builtInFactor, by: steps)
+        controller.externalFactor = BoostFactor.stepped(controller.externalFactor, by: steps)
     }
 }

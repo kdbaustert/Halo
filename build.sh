@@ -28,7 +28,7 @@ else
 fi
 # The `+` form because macOS bash 3.2 calls an empty array unbound under `set -u`.
 swift build -c release ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}
-BIN="$(swift build -c release ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --show-bin-path)/Brighter"
+BIN="$(swift build -c release ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --show-bin-path)/Halo"
 
 echo "==> Assembling bundle"
 rm -rf "$APP"
@@ -109,14 +109,12 @@ echo "==> Built $APP"
 
 if [[ "$INSTALL" == 1 ]]; then
     echo "==> Installing to /Applications"
-    # By bundle ID, so this also quits a copy installed before the rename to Halo.
-    osascript -e 'quit app id "dev.kennyb.Brighter"' 2>/dev/null || true
+    osascript -e 'quit app id "dev.kennyb.Halo"' 2>/dev/null || true
     for _ in $(seq 1 30); do
-        pgrep -x Halo >/dev/null 2>&1 || pgrep -x Brighter >/dev/null 2>&1 || break
+        pgrep -x Halo >/dev/null 2>&1 || break
         sleep 0.1
     done
     pkill -9 -x Halo 2>/dev/null || true
-    pkill -9 -x Brighter 2>/dev/null || true
     # Copied beside the old copy first, so a failed copy leaves it installed. Not named *.app, so
     # nothing registers the half-copied bundle.
     STAGED="/Applications/.Halo-installing"

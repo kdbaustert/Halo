@@ -39,6 +39,12 @@ final class SettingsPresenter: NSObject, NSWindowDelegate, NSMenuItemValidation 
         }
     }
 
+    /// Recording takes every Halo shortcut out of service until it ends, so it ends when the
+    /// window stops being the one that gets the keys.
+    func windowDidResignKey(_ notification: Notification) {
+        settings.stopRecordingShortcut()
+    }
+
     @objc func closeSettings(_ sender: Any?) {
         window?.performClose(sender)
     }
@@ -106,7 +112,7 @@ final class SettingsPresenter: NSObject, NSWindowDelegate, NSMenuItemValidation 
         window.isReleasedWhenClosed = false
         window.contentView = glassContent()
         window.center()
-        window.setFrameAutosaveName("BrighterSettings")
+        window.setFrameAutosaveName("HaloSettings")
         return window
     }
 

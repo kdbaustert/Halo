@@ -4,7 +4,9 @@ enum BoostFactor {
     /// it can only brighten small areas, so full-screen content would clip.
     static let range: ClosedRange<Double> = 1.0...2.0
     static let defaultValue = 1.5
+    /// The built-in display's. It was the only one before external displays got their own.
     static let defaultsKey = "boostFactor"
+    static let externalDefaultsKey = "externalBoostFactor"
     /// How far one press of the brighter or dimmer shortcut moves it: 10% on the menu's label.
     static let step = 0.1
 

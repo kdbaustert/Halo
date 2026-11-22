@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import XCTest
 
-@testable import Brighter
+@testable import Halo
 
 final class GammaTableTests: XCTestCase {
     func testScalingMultipliesEveryChannelPastOne() {
@@ -83,6 +83,37 @@ final class KeyComboTests: XCTestCase {
     func testKeyWithNothingToShowIsRefused() {
         XCTAssertNil(KeyCombo(keyCode: keyB, modifiers: .command, characters: nil))
         XCTAssertNil(KeyCombo(keyCode: keyB, modifiers: .command, characters: " "))
+    }
+
+    func testFunctionKeysPastF12UseTheirOwnName() {
+        let combo = KeyCombo(
+            keyCode: UInt16(kVK_F19), modifiers: .control, characters: "\u{F716}")
+        XCTAssertEqual(combo?.displayString, "⌃F19")
+    }
+
+    func testSameKeysUnderAnotherLayoutsNameStillMatch() throws {
+        let recorded = try XCTUnwrap(
+            KeyCombo(keyCode: keyB, modifiers: .command, characters: "b"))
+        let underAnotherLayout = try XCTUnwrap(
+            KeyCombo(keyCode: keyB, modifiers: .command, characters: "x"))
+        let withShift = try XCTUnwrap(
+            KeyCombo(keyCode: keyB, modifiers: [.command, .shift], characters: "b"))
+
+        XCTAssertTrue(recorded.usesSameKeys(as: underAnotherLayout))
+        XCTAssertFalse(recorded.usesSameKeys(as: withShift))
+    }
+
+    func testCommandAloneWithAStandardKeyIsAStandardAppShortcut() throws {
+        let quit = try XCTUnwrap(
+            KeyCombo(keyCode: UInt16(kVK_ANSI_Q), modifiers: .command, characters: "q"))
+        let withOption = try XCTUnwrap(
+            KeyCombo(keyCode: UInt16(kVK_ANSI_Q), modifiers: [.command, .option], characters: "q"))
+        let commandB = try XCTUnwrap(
+            KeyCombo(keyCode: keyB, modifiers: .command, characters: "b"))
+
+        XCTAssertTrue(quit.isStandardAppShortcut)
+        XCTAssertFalse(withOption.isStandardAppShortcut)
+        XCTAssertFalse(commandB.isStandardAppShortcut)
     }
 
     // Shortcuts are saved to UserDefaults as JSON and read back at launch.
