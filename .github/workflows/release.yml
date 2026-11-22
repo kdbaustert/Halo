@@ -14,25 +14,41 @@ on:
         description: 'Existing tag to release (e.g. v1.2.0)'
         required: true
 
-# One run per commit at a time. Two tags on one commit share a build number, the commit count:
-# queued, the second starts once the first is in the feed, and release.sh raises it to the next
-# free build. Keyed by commit rather than one group for every release, because GitHub keeps one
-# pending run per group and cancels the rest. Releases of different commits still run side by
-# side, and the feed step below regenerates against the latest feed and retries when another
-# release pushed first.
-concurrency:
-  group: release-${{ github.sha }}
-  cancel-in-progress: false
-
 permissions:
   contents: write
 
 jobs:
+  # `github.sha` is the tag's commit on a push but the default branch's on a manual run, so the
+  # commit the release job queues on is read from the checkout instead.
+  commit:
+    name: Find the tag's commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   release:
     name: Build, sign and publish
+    needs: commit
     runs-on: macos-26
     # Notarizing usually takes minutes but sometimes much longer.
     timeout-minutes: 90
+    # One release per commit at a time. Two tags on one commit share a build number, the commit
+    # count: queued, the second starts once the first is in the feed, and release.sh raises it to
+    # the next free build. Keyed by commit rather than one group for every release, because GitHub
+    # keeps one pending job per group and cancels the rest. Releases of different commits still
+    # run side by side, and the feed step below regenerates against the latest feed and retries
+    # when another release pushed first.
+    concurrency:
+      group: release-${{ needs.commit.outputs.sha }}
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
