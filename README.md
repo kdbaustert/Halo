@@ -17,13 +17,17 @@ The boost tops out at 2x. The XDR panel holds about 1000 nits across the whole s
 500 for SDR white, and past that it can only brighten small areas, so full-screen content would
 clip.
 
-If you dim the built-in display below 100%, Halo turns the boost off and turns it back on once
-brightness is at 100% again.
+If you dim the built-in display below 80%, Halo pauses its boost and resumes once brightness is
+at 100% again. You can turn that off in Settings.
+
+An external display has to be in HDR mode before it has any headroom to use. Halo can switch it
+to HDR while boosting and back when it stops. That's off by default, because the screen blanks
+for a moment as it switches.
 
 ## Requirements
 
 - macOS 14 or later
-- A display with EDR headroom, like the built-in XDR panel on a MacBook Pro
+- A display with EDR headroom: the built-in XDR panel on a MacBook Pro, or an external HDR display
 
 ## Install
 
@@ -45,12 +49,15 @@ A copy you build yourself never updates itself, so it can't be replaced by the p
 
 ## Using it
 
-Click the sun in the menu bar to turn the boost on and set its strength with the slider.
+Click the sun in the menu bar. The built-in display and external displays each get their own
+switch and strength slider, so you can boost one without the other.
 
 In Settings (⌘, from the menu) you can:
 
 - Launch Halo at login
 - Turn the boost back on at launch if it was on when Halo quit
+- Stop the boost pausing when the built-in display is dimmed
+- Switch external displays to HDR while boosting
 - Hide the menu bar icon. Open Halo again from Finder or Spotlight to get back to Settings.
 - Set global shortcuts to toggle the boost or make it brighter or dimmer by 10%. They work from
   any app and need no Accessibility permission.
