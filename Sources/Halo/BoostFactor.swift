@@ -16,6 +16,11 @@ enum BoostFactor {
         return min(max(value, range.lowerBound), range.upperBound)
     }
 
+    /// Partway from no boost (`fade` 0) to `factor` (`fade` 1).
+    static func faded(_ factor: Float, by fade: Float) -> Float {
+        1 + (factor - 1) * fade
+    }
+
     /// Reads a stored value back into range. Anything that isn't a number gets the default.
     static func clamped(_ stored: Any?) -> Double {
         guard let value = stored as? Double, value.isFinite else { return defaultValue }

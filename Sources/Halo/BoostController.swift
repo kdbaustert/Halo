@@ -8,21 +8,29 @@ final class BoostController: ObservableObject {
     @Published var isEnabled = false {
         didSet {
             guard isEnabled != oldValue else { return }
-            // Any change ends a wait for full brightness, including the rule's own: it turns the
-            // boost off first and starts waiting after.
+            // Any change ends a wait for full brightness or for leaving an app, including the
+            // rules' own: they change the boost first and start waiting after.
             isWaitingForFullBrightness = false
+            enabledBeforeAppRule = nil
             if !isEnabled { isBuiltInPaused = false }
             lastBrightness = SystemBrightness.builtInLevel()
             saveWantsBoost()
             if isEnabled {
+                // Back on partway through fading out: those boosters go, and the new ones pick
+                // up the fade where it got to.
+                if fadeTimer != nil {
+                    stopFading()
+                    stop()
+                }
                 start()
+                // A failed start has already turned the boost back off.
+                if isEnabled { startFade(to: 1) }
                 // After the start: the mode change can deliver its screen-parameter notification
                 // before it returns, and a rebuild in the middle of starting would leave two sets
                 // of boosters.
                 switchOnHDR()
             } else {
-                stop()
-                restoreHDR()
+                startFade(to: 0) { $0.finishTurningOff() }
             }
         }
     }
@@ -70,6 +78,9 @@ final class BoostController: ObservableObject {
             updateCapableDisplays()
         }
     }
+
+    /// Bundle IDs and what each one does to the boost while it's in front. Set from Settings.
+    var appRules: [String: AppBoostRule] = [:]
 
     /// Saved on every change, so Settings can turn the boost back on at the next launch. A boost
     /// waiting for full brightness counts as on.
@@ -142,6 +153,9 @@ final class BoostController: ObservableObject {
     /// macOS keeps a brightness level for each display arrangement and ramps to it when a display
     /// is plugged in or pulled. That took the built-in to 79% about a second after the unplug.
     private static let brightnessSettleInterval: TimeInterval = 5
+    /// Turning the boost on or off ramps the tables over this long instead of jumping.
+    private static let fadeDuration: TimeInterval = 0.3
+    private static let fadeFrameInterval: TimeInterval = 1.0 / 60
     private static let wasEnabledKey = "boostWasEnabled"
     private static let boostsBuiltInKey = "boostsBuiltIn"
     private static let boostsExternalKey = "boostsExternal"
@@ -159,6 +173,13 @@ final class BoostController: ObservableObject {
     private var boostedLayout: [DisplayLayout] = []
     private var reapplyTimer: Timer?
     private var brightnessTimer: Timer?
+    /// From the tables each booster found (0) to the full factor (1). Only a fade moves it, and
+    /// everything else applies at whatever it is.
+    private var fade: Float = 0
+    private var fadeTimer: Timer?
+    /// What the boost was before an app's rule changed it, put back once an app with no rule
+    /// comes to the front. Any other change to the boost clears it, so one made by hand stays.
+    private var enabledBeforeAppRule: Bool?
     /// The level at the last check, so only a drop past the dimmed level turns the boost off.
     private var lastBrightness: Float?
     private var connectedDisplays: Set<CGDirectDisplayID> = []
@@ -239,6 +260,55 @@ final class BoostController: ObservableObject {
         }
         boosters = []
         boostedLayout = []
+    }
+
+    /// Moves `fade` to `target` a frame at a time, writing the tables each frame, then runs
+    /// `completion`. Replaces any fade already going.
+    private func startFade(
+        to target: Float, then completion: @escaping @MainActor (BoostController) -> Void = { _ in }
+    ) {
+        stopFading()
+        guard !boosters.isEmpty else {
+            fade = target
+            completion(self)
+            return
+        }
+        let timer = Timer(timeInterval: Self.fadeFrameInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepFade(to: target, then: completion) }
+        }
+        // Common modes, for the same reason as the reapply timer: the menu's switch is the most
+        // likely thing to start a fade.
+        RunLoop.main.add(timer, forMode: .common)
+        fadeTimer = timer
+    }
+
+    /// A failed write ends the fade at `target`, rather than reporting the same error every frame.
+    private func stepFade(
+        to target: Float, then completion: @MainActor (BoostController) -> Void
+    ) {
+        let step = Float(Self.fadeFrameInterval / Self.fadeDuration)
+        fade = target > fade ? min(fade + step, target) : max(fade - step, target)
+        do {
+            try applyBoosters()
+        } catch {
+            report(error)
+            fade = target
+        }
+        guard fade == target else { return }
+        stopFading()
+        completion(self)
+    }
+
+    private func stopFading() {
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+    }
+
+    /// Run once the fade out is done. The tables go back before HDR mode ends, the same order
+    /// `shutDown()` uses.
+    private func finishTurningOff() {
+        stop()
+        restoreHDR()
     }
 
     private func applyAll() {
@@ -393,8 +463,9 @@ final class BoostController: ObservableObject {
         brightnessTimer = nil
     }
 
+    /// What an app's rule did doesn't count: the boost as it was before is what's saved.
     private func saveWantsBoost() {
-        let wantsBoost = isEnabled || isWaitingForFullBrightness
+        let wantsBoost = enabledBeforeAppRule ?? (isEnabled || isWaitingForFullBrightness)
         UserDefaults.standard.set(wantsBoost, forKey: Self.wasEnabledKey)
     }
 
@@ -415,7 +486,7 @@ final class BoostController: ObservableObject {
     private func applyBoosters() throws {
         for booster in boosters {
             let factor = Self.isBuiltIn(booster.displayID) ? builtInFactor : externalFactor
-            try booster.apply(factor: Float(factor))
+            try booster.apply(factor: Float(factor), fade: fade)
         }
     }
 
@@ -432,6 +503,7 @@ final class BoostController: ObservableObject {
         observe(app, NSScreen.colorSpaceDidChangeNotification) { $0.rebuild() }
         observe(workspace, NSWorkspace.didWakeNotification) { $0.applyAll() }
         observe(workspace, NSWorkspace.screensDidWakeNotification) { $0.applyAll() }
+        observe(workspace, NSWorkspace.didActivateApplicationNotification) { $0.followFrontApp() }
         // CoreGraphics also drops our tables when the process exits, but a clean quit shouldn't
         // depend on that.
         observe(app, NSApplication.willTerminateNotification) { $0.shutDown() }
@@ -442,8 +514,32 @@ final class BoostController: ObservableObject {
     private func shutDown() {
         observers.forEach { $0.0.removeObserver($0.1) }
         observers = []
+        stopFading()
         stop()
         restoreHDR()
+    }
+
+    /// Halo itself coming to the front, for Settings, is skipped, so the boost stays the way the
+    /// app behind it left it.
+    private func followFrontApp() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+            app.bundleIdentifier != Bundle.main.bundleIdentifier
+        else { return }
+        let change = AppBoostRule.change(
+            to: app.bundleIdentifier.flatMap { appRules[$0] }, isEnabled: isEnabled,
+            enabledBefore: enabledBeforeAppRule)
+        // The same as the shortcuts: there's nothing to turn on.
+        if change.isEnabled, !isEnabled, !hasCapableDisplay { return }
+        if change.isEnabled != isEnabled {
+            let name = app.bundleIdentifier ?? "An app with no bundle ID"
+            let state = change.isEnabled ? "on" : "off"
+            logger.info("\(name, privacy: .public) in front; boost \(state, privacy: .public)")
+            isEnabled = change.isEnabled
+        }
+        // Setting the boost cleared it, and saved without it.
+        guard change.enabledBefore != enabledBeforeAppRule else { return }
+        enabledBeforeAppRule = change.enabledBefore
+        saveWantsBoost()
     }
 
     private func observe(

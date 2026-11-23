@@ -47,6 +47,47 @@ final class BoostFactorTests: XCTestCase {
         XCTAssertEqual(BoostFactor.stepped(1.95, by: 1), 2.0)
         XCTAssertEqual(BoostFactor.stepped(1.05, by: -1), 1.0)
     }
+
+    func testFadeRunsFromNoBoostToTheFullFactor() {
+        XCTAssertEqual(BoostFactor.faded(1.8, by: 0), 1)
+        XCTAssertEqual(BoostFactor.faded(1.8, by: 0.5), 1.4, accuracy: 1e-6)
+        XCTAssertEqual(BoostFactor.faded(1.8, by: 1), 1.8)
+    }
+}
+
+final class AppBoostRuleTests: XCTestCase {
+    func testNoBoostAppTurnsTheBoostOffAndLeavingTurnsItBackOn() {
+        let entering = AppBoostRule.change(to: .noBoost, isEnabled: true, enabledBefore: nil)
+        XCTAssertEqual(entering, AppBoostRule.Change(isEnabled: false, enabledBefore: true))
+
+        let leaving = AppBoostRule.change(to: nil, isEnabled: false, enabledBefore: true)
+        XCTAssertEqual(leaving, AppBoostRule.Change(isEnabled: true, enabledBefore: nil))
+    }
+
+    func testBoostAppTurnsTheBoostOnAndLeavingTurnsItBackOff() {
+        let entering = AppBoostRule.change(to: .boost, isEnabled: false, enabledBefore: nil)
+        XCTAssertEqual(entering, AppBoostRule.Change(isEnabled: true, enabledBefore: false))
+
+        let leaving = AppBoostRule.change(to: nil, isEnabled: true, enabledBefore: false)
+        XCTAssertEqual(leaving, AppBoostRule.Change(isEnabled: false, enabledBefore: nil))
+    }
+
+    func testRuleThatMatchesTheBoostChangesNothing() {
+        let change = AppBoostRule.change(to: .boost, isEnabled: true, enabledBefore: nil)
+        XCTAssertEqual(change, AppBoostRule.Change(isEnabled: true, enabledBefore: nil))
+    }
+
+    // Off in a Don't boost app, then on in a Boost app: leaving that should still put back the
+    // boost from before the first one.
+    func testGoingBetweenRuleAppsKeepsTheStateFromBeforeEither() {
+        let change = AppBoostRule.change(to: .boost, isEnabled: false, enabledBefore: true)
+        XCTAssertEqual(change, AppBoostRule.Change(isEnabled: true, enabledBefore: true))
+    }
+
+    func testAppWithNoRuleLeavesTheBoostAloneWhenNothingIsHeld() {
+        let change = AppBoostRule.change(to: nil, isEnabled: true, enabledBefore: nil)
+        XCTAssertEqual(change, AppBoostRule.Change(isEnabled: true, enabledBefore: nil))
+    }
 }
 
 final class KeyComboTests: XCTestCase {

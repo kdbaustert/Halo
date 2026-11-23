@@ -2,6 +2,7 @@ import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
+    case apps
     case shortcuts
     case about
 
@@ -10,6 +11,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "General"
+        case .apps: return "Apps"
         case .shortcuts: return "Shortcuts"
         case .about: return "About"
         }
@@ -18,15 +20,18 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "gearshape.2.fill"
+        case .apps: return "square.grid.2x2.fill"
         case .shortcuts: return "command.circle.fill"
         case .about: return "info.circle.fill"
         }
     }
 
-    /// The same badge colours Cmd-Tab gives these tabs.
+    /// The same badge colours Cmd-Tab gives these tabs. Apps has no Cmd-Tab tab, so it's the
+    /// system green.
     var gradient: [Color] {
         switch self {
         case .general: return [Color(rgb: 0x8E8E93), Color(rgb: 0x6C6C70)]
+        case .apps: return [Color(rgb: 0x34C759), Color(rgb: 0x248A3D)]
         case .shortcuts: return [Color(rgb: 0x6E7BFF), Color(rgb: 0x3B45D6)]
         case .about: return [Color(rgb: 0xB8B8BE), Color(rgb: 0x95959B)]
         }
@@ -89,6 +94,7 @@ struct SettingsRootView: View {
     private var content: some View {
         switch tab {
         case .general: GeneralSettings(settings: settings)
+        case .apps: AppRuleSettings(settings: settings)
         case .shortcuts: ShortcutSettings(settings: settings)
         case .about: AboutSettings()
         }
@@ -137,6 +143,84 @@ private struct GeneralSettings: View {
     private static var pauseSubtitle: String {
         let dimmed = Int((FullBrightnessRule.dimmedLevel * 100).rounded())
         return "Below \(dimmed)%, until it's back at 100%. Turn off if auto-brightness trips it."
+    }
+}
+
+private struct AppRuleSettings: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        SettingsPage(title: "Apps", subtitle: "Turn the boost on or off while an app is in front.") {
+            SettingsSection(
+                title: "Rules",
+                footer: "Switching to an app with no rule puts the boost back the way it was. "
+                    + "A change you make yourself in between stays."
+            ) {
+                ForEach(sortedBundleIDs, id: \.self, content: row(for:))
+                SettingsRow(title: "Add an app") {
+                    Button("Choose…", action: chooseApps)
+                }
+            }
+        }
+    }
+
+    private var sortedBundleIDs: [String] {
+        settings.appRules.keys.sorted {
+            Self.name(of: $0).localizedStandardCompare(Self.name(of: $1)) == .orderedAscending
+        }
+    }
+
+    private func row(for bundleID: String) -> some View {
+        SettingsRow(title: Self.name(of: bundleID)) {
+            HStack(spacing: 4) {
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { settings.appRules[bundleID] ?? .noBoost },
+                        set: { settings.appRules[bundleID] = $0 })
+                ) {
+                    ForEach(AppBoostRule.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 128)
+
+                Button {
+                    settings.appRules[bundleID] = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove this app")
+            }
+        }
+    }
+
+    /// A new app starts as Don't boost, the case most worth a rule: HDR video and photo apps
+    /// already use the headroom, and boosting on top clips their highlights. Halo itself is
+    /// skipped, since the boost never follows it.
+    private func chooseApps() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let bundleID = Bundle(url: url)?.bundleIdentifier,
+                bundleID != Bundle.main.bundleIdentifier, settings.appRules[bundleID] == nil
+            else { continue }
+            settings.appRules[bundleID] = .noBoost
+        }
+    }
+
+    /// Falls back to the bundle ID for an app that's been deleted since.
+    private static func name(of bundleID: String) -> String {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        else { return bundleID }
+        let name = FileManager.default.displayName(atPath: url.path)
+        return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
     }
 }
 

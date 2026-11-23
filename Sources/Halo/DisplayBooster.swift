@@ -14,11 +14,13 @@ final class DisplayBooster {
         edrWindow = try EDRWindow(screen: screen)
     }
 
-    /// Safe to call again with the same factor: it writes the same table, never a table scaled
-    /// from an already scaled one.
-    func apply(factor: Float) throws {
+    /// Safe to call again with the same values: it writes the same table, never a table scaled
+    /// from an already scaled one. `fade` runs from 0 (the table as found) to 1 (the full
+    /// factor). Only the table fades: the pixel stays at the full factor, so the panel is already
+    /// in EDR mode when the table needs it and the window isn't redrawn every frame.
+    func apply(factor: Float, fade: Float) throws {
         edrWindow.show(brightness: factor)
-        try originalTable.scaled(by: factor).apply(to: displayID)
+        try originalTable.scaled(by: BoostFactor.faded(factor, by: fade)).apply(to: displayID)
     }
 
     func stop() throws {

@@ -40,8 +40,8 @@ enum ShortcutAction: CaseIterable {
 }
 
 /// What the Settings window changes: the login item, restoring the boost at launch, pausing it
-/// on a dimmed screen, switching external displays to HDR,
-/// and the global shortcuts that toggle and adjust it.
+/// on a dimmed screen, switching external displays to HDR, what each app does to it while in
+/// front, and the global shortcuts that toggle and adjust it.
 @MainActor
 final class AppSettings: ObservableObject {
     @Published var restoresBoost: Bool {
@@ -66,6 +66,14 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(showsMenuBarIcon, forKey: Self.showsMenuBarIconKey) }
     }
 
+    /// Keyed by bundle ID.
+    @Published var appRules: [String: AppBoostRule] {
+        didSet {
+            UserDefaults.standard.set(appRules.mapValues(\.rawValue), forKey: Self.appRulesKey)
+            controller.appRules = appRules
+        }
+    }
+
     /// Mirrors the system's Login Items list rather than our own defaults, so a change made in
     /// System Settings shows up here.
     @Published private(set) var launchesAtLogin: Bool
@@ -82,6 +90,7 @@ final class AppSettings: ObservableObject {
     private static let pausesWhenDimmedKey = "pausesWhenDimmed"
     private static let showsMenuBarIconKey = "showsMenuBarIcon"
     private static let switchesOnHDRKey = "switchesOnHDR"
+    private static let appRulesKey = "appRules"
 
     private let logger = Logger(subsystem: "dev.kennyb.Halo", category: "settings")
     private let controller: BoostController
@@ -105,6 +114,10 @@ final class AppSettings: ObservableObject {
         controller.switchesOnHDR = switchesOnHDR
         // Shown until it's switched off, so a first launch always has the icon.
         showsMenuBarIcon = defaults.object(forKey: Self.showsMenuBarIconKey) as? Bool ?? true
+        let savedRules = defaults.dictionary(forKey: Self.appRulesKey) as? [String: String] ?? [:]
+        let appRules = savedRules.compactMapValues(AppBoostRule.init(rawValue:))
+        self.appRules = appRules
+        controller.appRules = appRules
         launchesAtLogin = Self.isOn(SMAppService.mainApp.status)
         for action in ShortcutAction.allCases {
             shortcuts[action] = defaults.data(forKey: action.defaultsKey).flatMap {
